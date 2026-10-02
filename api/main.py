@@ -55,11 +55,15 @@ def _build_alerts(limit: int = 500) -> list[dict]:
     feat_recent = feat_all.tail(len(recent)).reset_index(drop=True)
     recent = recent.reset_index(drop=True)
     out = []
+    assert graph is not None, "lifespan must build graph first"
     for i, r in recent.iterrows():
         frow = feat_recent.iloc[i]
-        feats = {c: frow[c] for c in FEATURE_COLS}
+        # Convert to plain Python floats so the cache is JSON-serializable
+        # and reusable by /case without re-featurizing with dummy values.
+        feats = {c: float(frow[c]) for c in FEATURE_COLS}
         # expose a few raw fields the LLM needs
-        feats["location_new"] = frow.get("location_new", 0)
+        feats["location_new"] = float(frow.get("location_new", 0))
+        feats["amount_vs_user_avg"] = float(feats.get("amount_vs_user_avg", 1.0))
         txn = {"sender_id": r["sender"], "receiver_id": r["receiver"], "amount": float(r["amount"]),
                "channel": r["channel"], "device_id": r["device_id"], "location": r["location"],
                "timestamp": r["timestamp"], "type": r["type"]}
@@ -69,7 +73,9 @@ def _build_alerts(limit: int = 500) -> list[dict]:
         s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
         d = decide(s["risk_score"])
         out.append({"txn_id": r["txn_id"], **txn, **s, **d,
-                    "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"], "label": int(r.get("is_fraud", 0))})
+                    "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"], "label": int(r.get("is_fraud", 0)),
+                    "feats": feats,
+                    "graph_boost_raw": float(gf["boost"])})
     return sorted(out, key=lambda x: -x["risk_score"])
 
 
@@ -85,7 +91,7 @@ def health():
 
 @app.post("/score")
 def score(req: ScoreRequest):
-    assert store is not None
+    assert store is not None and graph is not None
     t0 = time.perf_counter()
     txn = req.model_dump()
     feats = store.featurize(txn)
@@ -115,7 +121,9 @@ def alerts(limit: int = Query(100, le=500), level: str | None = None):
     rows = alert_cache[:limit] if alert_cache else []
     if level:
         rows = [r for r in rows if r["risk_level"].lower() == level.lower()]
-    return {"alerts": rows[:limit], "count": len(rows[:limit])}
+    # Strip internal feature cache from the list view; /case returns full detail.
+    public = [{k: v for k, v in r.items() if k not in ("feats", "graph_boost_raw")} for r in rows[:limit]]
+    return {"alerts": public, "count": len(public)}
 
 
 @app.get("/case/{txn_id}")
@@ -123,18 +131,29 @@ def case(txn_id: str, lang: str = "en"):
     rows = [r for r in alert_cache if r["txn_id"] == txn_id]
     if not rows:
         raise HTTPException(404, "case not found in pre-scored queue; POST /score first")
+    assert store is not None
     c = rows[0]
-    txn = {"sender_id": c["sender_id"] if "sender_id" in c else c.get("sender"),
+    txn = {"sender_id": c.get("sender_id", c.get("sender")),
            "receiver_id": c.get("receiver_id", c.get("receiver")), "amount": c["amount"],
-           "channel": c["channel"], "timestamp": c.get("timestamp", "")}
-    feats = store.featurize({"sender_id": txn["sender_id"], "receiver_id": txn["receiver_id"],
-                             "amount": txn["amount"], "channel": txn["channel"], "device_id": "unknown",
-                             "location": "Dhaka", "timestamp": txn["timestamp"] or "2026-08-15T12:00:00"})
-    nar = narrate(txn, feats, c, {"boost": c.get("graph_boost", 0),
+           "channel": c["channel"], "device_id": c.get("device_id", "unknown"),
+           "location": c.get("location", "Dhaka"),
+           "timestamp": c.get("timestamp", "")}
+    # Reuse the exact causal features computed at queue build time.
+    # Fallback to live featurization only for caches built before this fix.
+    feats = c.get("feats")
+    if not feats:
+        feats = store.featurize({
+            "sender_id": txn["sender_id"], "receiver_id": txn["receiver_id"],
+            "amount": txn["amount"], "channel": txn["channel"],
+            "device_id": txn.get("device_id", "unknown"),
+            "location": txn.get("location", "Dhaka"),
+            "timestamp": txn["timestamp"] or "2026-08-15T12:00:00"})
+    nar = narrate(txn, feats, c, {"boost": c.get("graph_boost_raw", c.get("graph_boost", 0)),
                                   "fraud_neighbors_2hop": c.get("fraud_neighbors_2hop", 0)}, lang=lang)
     timeline = store.txns[store.txns.sender == txn["sender_id"]].tail(10)[
         ["txn_id", "receiver", "amount", "timestamp", "location"]].to_dict("records")
-    return {**c, "narrative": nar["narrative"], "timeline": timeline}
+    public = {k: v for k, v in c.items() if k not in ("feats",)}
+    return {**public, "narrative": nar["narrative"], "timeline": timeline}
 
 
 @app.post("/decision")
