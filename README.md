@@ -6,42 +6,30 @@ Answers the Track 01 test: **What happened? Why is it risky? What should upay do
 
 ## Features
 - **Real-time scoring API** — `POST /score` in → `risk_score 0-1, risk_level, top_3_reasons, recommended_action` out. Ensemble `0.7·classifier + 0.2·anomaly + 0.1·graph`. Bands in `config/thresholds.yaml`: `>0.85` hold+step-up+review, `0.6–0.85` review, `<0.6` allow. Never auto-blocks money.
-- **AI engine (4x)** — XGBoost (HGB fallback) classifier + IsolationForest anomaly (train-calibrated percentile, no test leakage) + NetworkX 2-hop mule boost + grounded LLM investigator (EN/BN, offline fallback).
+- **AI engine (4x)** — XGBoost classifier (HGB fallback) + IsolationForest anomaly (train-calibrated percentile, no test leakage) + NetworkX 2-hop mule boost + grounded LLM investigator (EN/BN, offline fallback). Reasons combine auditable rules with per-row SHAP attributions.
 - **Analyst queue** — `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline + narrative, reuses cached causal features), `POST /decision` (feedback loop for retrain).
 - **Analyst console** — no-build static frontend in `/web` served at `GET /`: risk queue with level filter + search, case detail with EN/BN narrative + timeline + decision buttons, and a `POST /score` playground.
 - **Evaluation** — `python -m eval.evaluate`: Precision@100, Recall@5%FPR, AUC vs rule baseline, p95 latency, fairness FPR by district/account-age, business simulation (loss prevented, analyst-minutes saved). Batched scoring (~2s for 8k rows vs ~100s before).
 
 ## Technology stack
-Python 3.10+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib. Optional: XGBoost, SHAP, LightGBM (graceful fallback if absent). LLM: any OpenAI-compatible API (Groq default) with deterministic offline template fallback.
+Python 3.12+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib.
+ML: XGBoost primary classifier (HGB fallback if absent), per-row SHAP attributions
+(lazy, ~1.4ms, falls back to global importance), IsolationForest anomaly
+(train-calibrated percentile), NetworkX 2-hop mule boost. LLM: any
+OpenAI-compatible API (Groq default) with deterministic offline template fallback.
 
 ## Requirements
-- Python 3.10+ with venv
-- 2 GB RAM, no GPU needed
+- Python 3.12+ with venv (pandas 3 requires it)
+- 2 GB RAM, no GPU needed (CPU-only; `nvidia-nccl` wheels ship with XGBoost but are unused)
 - Optional `LLM_API_KEY` for live narratives (works offline without it)
 
 ## Installation and setup
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv ~/.venvs/vigil && source ~/.venvs/vigil/bin/activate
 pip install -r requirements.txt
-# optional: pip install xgboost shap lightgbm
 python -m data_gen.generate --n-customers 5000 --n-txns 50000 --out data
 python -m models.train --data data --artifacts artifacts
 ```
-
-<details>
-<summary>Arch Linux (pacman, no pip / no venv)</summary>
-
-```bash
-sudo pacman -S python-pandas python-scikit-learn python-networkx \
-  python-fastapi python-starlette python-pydantic python-yaml \
-  python-joblib python-dateutil uvicorn python-pytest python-httpx
-# xgboost/shap are not in official repos — the HGB fallback is used automatically
-python -m data_gen.generate --n-customers 5000 --n-txns 50000 --out data
-python -m models.train --data data --artifacts artifacts
-uvicorn api.main:app --port 8000
-python -m pytest -q
-```
-</details>
 
 ## Environment variables
 | Name | Purpose | Example |
@@ -70,8 +58,7 @@ python -m scripts.run_demo              # 4k-txn end-to-end: generate → train 
 
 ## Testing instructions
 ```bash
-pip install pytest httpx
-pytest -q                                   # rules/LLM-fallback/feature checks
+pytest -q                                   # smoke + API integration (needs data/ + artifacts/)
 python -m eval.evaluate --sample 20000      # offline metrics + fairness + business sim
 # API verify: /health -> {"ok": true}; /score latency_ms should be <200 p95 locally
 # Frontend verify: GET / -> 200 text/html; queue + case + playground in browser

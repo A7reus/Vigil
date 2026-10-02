@@ -8,7 +8,7 @@ Optimize for fast, committable, demoable changes.
   `docs/eval-sample.json` fresh; all commits pushed (`git status` clean).
 - Save an offline bundle: this repo + `data/` + `artifacts/` on disk, venue net
   may fail. The LLM falls back to deterministic EN/BN templates without a key.
-- Note the CPU-only path: HGB fallback, no GPU needed.
+- Note the CPU-only path: XGBoost trains in ~10s on CPU, no GPU needed.
 
 ## 2. When new requirements drop (first 30 min)
 - Map to the cheapest layer:

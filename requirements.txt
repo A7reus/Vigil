@@ -1,20 +1,24 @@
-# Core (loosely pinned for 72h hackathon speed; upper bounds avoid breaking API changes)
-pandas>=2.0,<3
-numpy>=1.26,<3
-scikit-learn>=1.3,<2
-networkx>=3.0,<4
-fastapi>=0.110,<1
-uvicorn[standard]>=0.29,<1
-pydantic>=2.0,<3
-pyyaml>=6.0,<7
-joblib>=1.3,<2
-python-dateutil>=2.8,<3
+# Pinned 2026-10-02 (Python 3.12+; verified in ~/.venvs/vigil on 3.14).
+# Install: python -m venv ~/.venvs/vigil && source ~/.venvs/vigil/bin/activate && pip install -r requirements.txt
+pandas==3.0.6
+numpy==2.5.3
+scikit-learn==1.9.1
+scipy==1.18.1
+networkx==3.7
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+pydantic==2.13.5
+PyYAML==6.0.3
+joblib==1.6.0
+python-dateutil==2.9.0.post0
+pytest==9.1.1
+httpx==0.28.1
 
-# Test / verification (also available via pacman on Arch: python-pytest python-httpx)
-pytest>=8
-httpx>=0.27
-
-# Optional but preferred (graceful HGB fallback if missing):
-# xgboost>=2.0
-# shap>=0.45
-# lightgbm>=4.0
+# ML engine: XGBoost is the primary classifier (best metrics, SHAP-native).
+xgboost==3.4.1
+# Per-row SHAP attributions for explanations (~1.4ms/row, lazy-loaded, falls back
+# to global importance when absent).
+shap==0.52.0
+# Available alternative (metrics tied with XGBoost on our data; not wired into
+# training — kept for experiments, HGB from scikit-learn remains the zero-extra-dep fallback).
+lightgbm==4.7.0

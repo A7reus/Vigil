@@ -77,3 +77,17 @@ def test_frontend_served(client):
     assert client.get("/").status_code == 200
     assert "text/html" in client.get("/").headers["content-type"]
     assert client.get("/favicon.svg").status_code == 200
+
+
+@needs_stack
+def test_explanation_backfill_chain(client):
+    """Sparse-rule row must still yield 3 reasons via SHAP or importance fallback."""
+    from features.build import FEATURE_COLS
+    from models import infer
+    row = {c: 0.0 for c in FEATURE_COLS}
+    row.update({"amount": 19500, "amount_log": 9.8, "hour": 14, "sender_cnt_24h": 1,
+                "sender_sum_24h": 19500, "time_since_last_min": 600, "amount_vs_user_avg": 2.0,
+                "is_round_amount": 1, "recv_cnt_1h": 9, "recv_n_senders_1h": 9,
+                "fan_in_flag": 1, "p2p_flag": 1, "account_age_days": 400, "avg_balance_log": 8.5})
+    out = infer.score_features(row, 0.30)
+    assert len(out["top_3_reasons"]) == 3
