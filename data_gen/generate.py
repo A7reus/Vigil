@@ -137,14 +137,16 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
         ch = random.choices(["app", "ussd", "agent"], weights=[0.7, 0.2, 0.1])[0]
         add(s, r, amount, ttype, ts, dev, loc, ch)
 
-    # ---- Injected fraud ----
-    fraud_types = (["scam"] * int(n_fraud * 0.4) + ["ato"] * int(n_fraud * 0.25)
-                   + ["mule"] * int(n_fraud * 0.25))
-    fraud_types += ["agent"] * (n_fraud - len(fraud_types))
-    random.shuffle(fraud_types)
+    # ---- Injected fraud (budget by TXN count so mule fan-out doesn't inflate rate) ----
+    target_fraud_txns = n_fraud
+    fraud_txns = 0
+    # type mix per fraud *event*
+    type_cycle = ["scam", "ato", "mule", "agent"]
+    weights = [0.4, 0.25, 0.2, 0.15]
 
     # Pre-pick mule collector rings: groups of 10 senders -> 1 collector
-    for ft in fraud_types:
+    while fraud_txns < target_fraud_txns:
+        ft = random.choices(type_cycle, weights=weights)[0]
         day = int(rng.integers(0, days))
         if ft == "scam":
             s = random.choice(cust_ids)
@@ -154,6 +156,7 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
             ts = start + timedelta(days=day, hours=_night_hour(rng), minutes=int(rng.integers(0, 60)))
             new_dev = f"DX{tid:06d}"  # brand-new device not in registry
             add(s, r, amount, "P2P", ts, new_dev, cust_district[s], "app", 1, "scam")
+            fraud_txns += 1
         elif ft == "ato":
             s = random.choice(cust_ids)
             home = cust_district[s]
@@ -166,6 +169,7 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
                 ts = burst_t + timedelta(minutes=int(k * rng.integers(2, 10)))
                 add(s, r, amount, "P2P", ts, f"DX{tid:06d}", jump if k > 0 else home,
                     "app", 1, "ato", pwd=1 if k == 0 else 0)
+                fraud_txns += 1
         elif ft == "mule":
             collectors = random.sample(cust_ids, 1)
             fanin = random.sample([c for c in cust_ids if c not in collectors], 10)
@@ -176,6 +180,9 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
                 ts = burst_t + timedelta(minutes=int(rng.integers(0, 60)))
                 add(s, collector, amount, "P2P", ts, random.choice(dev_by_cust[s]),
                     cust_district[s], "app", 1, "mule")
+                fraud_txns += 1
+                if fraud_txns >= target_fraud_txns:
+                    break
         else:  # agent anomaly: big cash-outs 3x peer median
             s = random.choice(cust_ids)
             r = random.choice(cust_ids)
@@ -183,6 +190,7 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
             ts = start + timedelta(days=day, hours=_daytime_hour(rng))
             add(s, r, amount, "cash-out", ts, random.choice(dev_by_cust[s]),
                 cust_district[s], "agent", 1, "agent")
+            fraud_txns += 1
 
     df = pd.DataFrame(txns).sort_values("timestamp").reset_index(drop=True)
     # reassign txn ids in time order
@@ -203,9 +211,10 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     customers, devices, txns = generate(args.n_customers, args.n_txns, args.fraud_rate, seed=args.seed)
-    # chronological split markers
-    cut = txns.timestamp.quantile(1 - args.test_frac)
-    txns["split"] = (txns.timestamp > cut).map({True: "test", False: "train"})
+    # chronological split markers (parse ISO strings first)
+    ts = pd.to_datetime(txns.timestamp)
+    cut = ts.quantile(1 - args.test_frac)
+    txns["split"] = (ts > cut).map({True: "test", False: "train"})
     customers.to_csv(out / "customers.csv", index=False)
     devices.to_csv(out / "devices.csv", index=False)
     txns.to_csv(out / "transactions.csv", index=False)

@@ -87,6 +87,8 @@ def build_features(txns: pd.DataFrame, customers: pd.DataFrame, devices: pd.Data
 
         cinfo = cust.get(s, {})
         out_rows.append({
+            "district": cinfo.get("district", "Dhaka"),
+            "age_group": cinfo.get("age_group", "26-35"),
             "amount": amt, "amount_log": float(np.log1p(amt)),
             "hour": hour, "unusual_hour": unusual, "is_night": night, "is_weekend": weekend,
             "sender_cnt_1h": cnt_1h, "sender_sum_1h": sum_1h,
@@ -115,5 +117,7 @@ def build_features(txns: pd.DataFrame, customers: pd.DataFrame, devices: pd.Data
         rh.append((ts, s))
 
     feat = pd.DataFrame(out_rows)
-    df = pd.concat([df.drop(columns=["__ts"]), feat], axis=1)
+    # feat carries canonical `amount` / `password_reset_flag` (same values); drop originals to avoid dup cols
+    df = pd.concat([df.drop(columns=["__ts", "amount", "password_reset_flag"]), feat], axis=1)
+    return df
     return df

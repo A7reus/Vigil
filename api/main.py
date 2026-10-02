@@ -38,20 +38,31 @@ async def lifespan(app: FastAPI):
     except Exception:
         fraud_set = fraud_nodes(tx) if len(tx) and "is_fraud" in tx else set()
     # pre-score recent test txns as the analyst queue (top-200 by risk, cached)
-    alert_cache = _build_alerts(limit=500)
+    alert_cache = _build_alerts(limit=200)
     yield
 
 
 def _build_alerts(limit: int = 500) -> list[dict]:
+    """Causal rescoring: rebuild features on the slice in time order (no future leakage)."""
     assert store is not None
+    from features.build import FEATURE_COLS, build_features
     cfg = get_config()
-    df = store.txns.tail(limit).iloc[::-1]
+    recent = store.txns.tail(limit).copy()
+    # build causal features over history + recent so velocity/seen-flags are past-only
+    hist = store.txns.head(max(0, len(store.txns) - limit))
+    combined = pd.concat([hist, recent], ignore_index=True)
+    feat_all = build_features(combined, store.customers, store.devices)
+    feat_recent = feat_all.tail(len(recent)).reset_index(drop=True)
+    recent = recent.reset_index(drop=True)
     out = []
-    for _, r in df.iterrows():
+    for i, r in recent.iterrows():
+        frow = feat_recent.iloc[i]
+        feats = {c: frow[c] for c in FEATURE_COLS}
+        # expose a few raw fields the LLM needs
+        feats["location_new"] = frow.get("location_new", 0)
         txn = {"sender_id": r["sender"], "receiver_id": r["receiver"], "amount": float(r["amount"]),
                "channel": r["channel"], "device_id": r["device_id"], "location": r["location"],
                "timestamp": r["timestamp"], "type": r["type"]}
-        feats = store.featurize(txn)
         gf = network_risk(txn["receiver_id"], graph, fraud_set,
                           k_threshold=cfg["graph"]["two_hop_fraud_neighbors_threshold"],
                           boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])

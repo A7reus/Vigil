@@ -64,7 +64,7 @@ class HistoryStore:
             avg = float(txn["amount"])
         amt = float(txn["amount"])
         hour = ts.hour
-        rh = self.txns[(self.txns.receiver == txn["receiver_id"]) & (self.txns.__ts > (ts - pd.Timedelta(hours=1)))]
+        rh = self.txns[(self.txns.receiver == txn["receiver_id"]) & (self.txns["__ts"] > (ts - pd.Timedelta(hours=1)))]
         recv_cnt = len(rh)
         recv_senders = int(rh.sender.nunique()) if len(rh) else 0
         reg = self.registry.get(s, set())
