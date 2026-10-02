@@ -120,4 +120,3 @@ def build_features(txns: pd.DataFrame, customers: pd.DataFrame, devices: pd.Data
     # feat carries canonical `amount` / `password_reset_flag` (same values); drop originals to avoid dup cols
     df = pd.concat([df.drop(columns=["__ts", "amount", "password_reset_flag"]), feat], axis=1)
     return df
-    return df
