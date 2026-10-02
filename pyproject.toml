@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+# Let bare `pytest` resolve repo-root packages (features/, api/, models/, ...)
+# the same way `python -m pytest` does via CWD on sys.path.
+pythonpath = ["."]

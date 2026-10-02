@@ -36,11 +36,22 @@ def load_artifacts(art_dir: str | Path = ART):
         _calib = np.sort(np.load(calib_path)) if calib_path.exists() else None
     except Exception:
         _calib = None
-    fi = getattr(_clf, "feature_importances_", None)
-    if fi is None and hasattr(_clf, "coef_"):
-        fi = np.abs(np.asarray(_clf.coef_).ravel())
-    if fi is not None:
-        _feature_importance = dict(zip(FEATURE_COLS, [float(x) for x in fi]))
+    # Prefer train-time permutation importance (works for any model); fall back
+    # to native importances for artifacts trained before that file existed.
+    _feature_importance = {}
+    try:
+        imp_path = art_dir / "feature_importance.json"
+        if imp_path.exists():
+            _feature_importance = {k: float(v) for k, v in json.loads(imp_path.read_text()).items()
+                                   if k in FEATURE_COLS}
+    except Exception:
+        _feature_importance = {}
+    if not _feature_importance:
+        fi = getattr(_clf, "feature_importances_", None)
+        if fi is None and hasattr(_clf, "coef_"):
+            fi = np.abs(np.asarray(_clf.coef_).ravel())
+        if fi is not None:
+            _feature_importance = dict(zip(FEATURE_COLS, [float(x) for x in fi]))
     return _clf, _iso
 
 

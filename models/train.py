@@ -105,6 +105,21 @@ def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | No
     joblib.dump(clf, art / "classifier.pkl")
     joblib.dump(iso, art / "anomaly.pkl")
     (art / "feature_cols.json").write_text(json.dumps(FEATURE_COLS, indent=2))
+    # Model-agnostic global importance (permutation on a small train sample) so
+    # explanations always have a fallback — HGB exposes no feature_importances_
+    # and SHAP may be absent on minimal installs.
+    try:
+        from sklearn.inspection import permutation_importance
+
+        rng = np.random.default_rng(42)
+        idx = rng.choice(len(Xtr), size=min(3000, len(Xtr)), replace=False)
+        perm = permutation_importance(clf, Xtr[idx], ytr[idx], n_repeats=5,
+                                      random_state=42, n_jobs=4)
+        (art / "feature_importance.json").write_text(json.dumps(
+            {c: round(float(v), 5) for c, v in zip(FEATURE_COLS, perm.importances_mean)},
+            indent=2))
+    except Exception as e:
+        print(f"warning: permutation importance skipped ({e})")
     # fraud address book for graph boost (from TRAIN only — no test leakage)
     fset = set(txns[tr & (txns.is_fraud == 1).to_numpy()][["sender", "receiver"]].stack().tolist())
     (art / "fraud_nodes.json").write_text(json.dumps(sorted(fset)))
