@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,26 +21,51 @@ from api.store import HistoryStore
 from models import infer
 from models.graph import build_graph, fraud_nodes, network_risk
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("vigil")
+
 store: HistoryStore | None = None
 graph: nx.DiGraph | None = None
 fraud_set: set = set()
 alert_cache: list[dict] = []
+startup_info: dict = {}
+request_count: int = 0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, graph, fraud_set, alert_cache
+    global store, graph, fraud_set, alert_cache, startup_info
+    t0 = time.perf_counter()
     get_config()
-    infer.load_artifacts()
+    try:
+        infer.load_artifacts()
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            f"model artifacts missing ({e}). Run in order: "
+            "python -m data_gen.generate --out data && "
+            "python -m models.train --data data --artifacts artifacts, "
+            "then start the API."
+        ) from e
     store = HistoryStore()
+    if len(store.txns) == 0:
+        log.warning("no transaction history found in data/ — queue will be empty until data is generated")
     tx = store.txns
     graph = build_graph(tx) if len(tx) else nx.DiGraph()
     try:
         fraud_set = set(json.loads(Path("artifacts/fraud_nodes.json").read_text()))
     except Exception:
         fraud_set = fraud_nodes(tx) if len(tx) and "is_fraud" in tx else set()
-    # pre-score recent test txns as the analyst queue (top-200 by risk, cached)
-    alert_cache = _build_alerts(limit=200)
+    # Pre-score recent txns as the analyst queue. Bound via env so large
+    # histories don't blow up cold-start time on the on-site machine.
+    pre_limit = int(os.getenv("VIGIL_ALERTS_LIMIT", "200"))
+    alert_cache = _build_alerts(limit=pre_limit)
+    startup_info = {
+        "history_rows": len(tx), "graph_nodes": graph.number_of_nodes(),
+        "queue_size": len(alert_cache),
+        "startup_s": round(time.perf_counter() - t0, 1),
+        "pre_limit": pre_limit,
+    }
+    log.info("startup complete: %s", startup_info)
     yield
 
 
@@ -73,24 +100,39 @@ def _build_alerts(limit: int = 500) -> list[dict]:
         s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
         d = decide(s["risk_score"])
         out.append({"txn_id": r["txn_id"], **txn, **s, **d,
-                    "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"], "label": int(r.get("is_fraud", 0)),
+                    "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
+                    "fraud_neighbor_sample": gf.get("fraud_neighbor_sample", []),
+                    "label": int(r.get("is_fraud", 0)),
                     "feats": feats,
                     "graph_boost_raw": float(gf["boost"])})
     return sorted(out, key=lambda x: -x["risk_score"])
 
 
 app = FastAPI(title="ScamShield Risk API", version="0.1.0", lifespan=lifespan)
+# NOTE (security): open CORS is intentional for the hackathon demo (judges hit
+# the API from any origin). Restrict allow_origins to the deployed frontend
+# domain before any production use.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/health")
 def health():
     return {"ok": True, "history_rows": 0 if store is None else len(store.txns),
-            "graph_nodes": 0 if graph is None else graph.number_of_nodes()}
+            "graph_nodes": 0 if graph is None else graph.number_of_nodes(),
+            "queue_size": len(alert_cache), "startup": startup_info}
+
+
+@app.get("/metrics")
+def metrics():
+    """Lightweight ops counters (monitoring expectation in the guideline)."""
+    return {"requests_scored": request_count, "queue_size": len(alert_cache),
+            "decisions_logged": 0 if store is None else len(store.decisions),
+            "startup": startup_info}
 
 
 @app.post("/score")
 def score(req: ScoreRequest):
+    global request_count
     assert store is not None and graph is not None
     t0 = time.perf_counter()
     txn = req.model_dump()
@@ -108,11 +150,14 @@ def score(req: ScoreRequest):
                   "device_id": txn["device_id"], "location": txn["location"], "channel": txn["channel"],
                   "is_fraud": 0, "fraud_type": "none", "password_reset_flag": 0})
     latency_ms = (time.perf_counter() - t0) * 1000
+    request_count += 1
+    log.info("score %s -> %.3f %s (%.1fms)", txn_id, s["risk_score"], d["risk_level"], latency_ms)
     return {"txn_id": txn_id, "risk_score": s["risk_score"], "risk_level": d["risk_level"],
             "top_3_reasons": s["top_3_reasons"], "recommended_action": d["recommended_action"],
             "components": {**{k: s[k] for k in ("p_fraud", "anomaly", "graph_boost")},
-                           "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
-                           "latency_ms": round(latency_ms, 1)},
+                            "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
+                            "fraud_neighbor_sample": gf.get("fraud_neighbor_sample", []),
+                            "latency_ms": round(latency_ms, 1)},
             "narrative": nar["narrative"]}
 
 
@@ -150,9 +195,12 @@ def case(txn_id: str, lang: str = "en"):
             "timestamp": txn["timestamp"] or "2026-08-15T12:00:00"})
     nar = narrate(txn, feats, c, {"boost": c.get("graph_boost_raw", c.get("graph_boost", 0)),
                                   "fraud_neighbors_2hop": c.get("fraud_neighbors_2hop", 0)}, lang=lang)
-    timeline = store.txns[store.txns.sender == txn["sender_id"]].tail(10)[
-        ["txn_id", "receiver", "amount", "timestamp", "location"]].to_dict("records")
+    sent = store.txns[store.txns.sender == txn["sender_id"]].tail(6)
+    recv = store.txns[store.txns.receiver == txn["sender_id"]].tail(4)
+    timeline = pd.concat([sent, recv]).sort_values("__ts").tail(10)[
+        ["txn_id", "sender", "receiver", "amount", "timestamp", "location"]].to_dict("records")
     public = {k: v for k, v in c.items() if k not in ("feats",)}
+    log.info("case %s viewed (lang=%s)", txn_id, lang)
     return {**public, "narrative": nar["narrative"], "timeline": timeline}
 
 
@@ -160,6 +208,7 @@ def case(txn_id: str, lang: str = "en"):
 def decision(req: DecisionRequest):
     assert store is not None
     store.decisions.append({**req.model_dump(), "at": pd.Timestamp.utcnow().isoformat()})
+    log.info("decision %s -> %s by %s", req.txn_id, req.decision, req.analyst)
     return {"ok": True, "logged": req.model_dump(), "pending_retrain": len(store.decisions)}
 
 
