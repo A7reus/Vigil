@@ -20,7 +20,7 @@ from sklearn.metrics import roc_auc_score
 
 from features.build import FEATURE_COLS, build_features
 from models.graph import build_graph, fraud_nodes, network_risk
-from models.infer import load_artifacts, score_features
+from models.infer import load_artifacts, score_batch, score_features
 
 
 def rule_baseline(feat: pd.DataFrame) -> np.ndarray:
@@ -70,17 +70,26 @@ def main():
 
     g = build_graph(tr)
     fraud = fraud_nodes(tr[tr.is_fraud == 1]) if "is_fraud" in tr else set()
-    X = te[FEATURE_COLS].to_dict("records")
-    scores, t0 = [], time.perf_counter()
+    # Batched ML scores (one predict_proba + one score_samples call).
+    # Graph boost stays per-receiver (train-only fraud set: no leakage).
+    t0 = time.perf_counter()
+    X_mat = te[FEATURE_COLS].to_numpy(dtype=float)
+    cfg_graph = cfg.get("graph", {})
+    boosts = np.array([
+        network_risk(recv, g, fraud,
+                     k_threshold=cfg_graph.get("two_hop_fraud_neighbors_threshold", 3),
+                     boost_per_hit=cfg_graph.get("boost_per_hit", 0.15),
+                     max_boost=cfg_graph.get("max_boost", 0.30))["boost"]
+        for recv in te["receiver"].tolist()
+    ], dtype=float)
+    scores = score_batch(X_mat, boosts, cfg["ensemble_weights"])
+    # Single-row p95 latency probe (what /score pays per request).
     lat = []
-    for row in X:
+    probe_rows = te[FEATURE_COLS].to_dict("records")[:50]
+    for i, row in enumerate(probe_rows):
         t1 = time.perf_counter()
-        # graph boost from receiver proximity (train-only fraud set: no leakage)
-        recv = te.iloc[len(scores)]["receiver"]
-        gb = network_risk(recv, g, fraud)["boost"]
-        scores.append(score_features(row, gb, cfg["ensemble_weights"])["risk_score"])
+        score_features(row, float(boosts[i]), cfg["ensemble_weights"])
         lat.append((time.perf_counter() - t1) * 1000)
-    scores = np.array(scores)
     rules = rule_baseline(te)
 
     def fpr_by(col):

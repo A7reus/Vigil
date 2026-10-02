@@ -37,6 +37,21 @@ def recall_at_fpr(y_true: np.ndarray, scores: np.ndarray, fpr: float = 0.05) -> 
     return float(tprs[mask].max()) if mask.any() else 0.0
 
 
+def calibrate_anomaly(scores_calib: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    """Percentile-normalize anomaly scores using TRAIN-only calibration.
+
+    rank(pct) over the test set leaks test distribution and always returns 1.0
+    for a single row at serve time. Instead, map each score to its percentile
+    within the sorted train-normal scores via searchsorted (O(log N)).
+    """
+    calib = np.sort(np.asarray(scores_calib, dtype=float))
+    s = np.asarray(scores, dtype=float)
+    if len(calib) == 0:
+        return np.full_like(s, 0.5, dtype=float)
+    idx = np.searchsorted(calib, s, side="left")
+    return (idx / len(calib)).astype(float)
+
+
 def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | None = None):
     data_dir, art = Path(data_dir), Path(artifacts)
     art.mkdir(parents=True, exist_ok=True)
@@ -70,9 +85,11 @@ def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | No
     iso.fit(Xtr[ytr == 0][: min(20000, (ytr == 0).sum())])
 
     p_test = clf.predict_proba(Xte)[:, 1]
+    # Calibrate on TRAIN normals only — no test leakage, same mapping as serving.
+    calib_raw = -iso.score_samples(Xtr[ytr == 0][: min(20000, (ytr == 0).sum())])
+    np.save(art / "anomaly_calib.npy", np.sort(np.asarray(calib_raw, dtype=float)))
     a_test = (-iso.score_samples(Xte))  # higher = more anomalous
-    # normalize anomaly to 0..1 via rank
-    a_test_n = (pd.Series(a_test).rank(pct=True)).to_numpy()
+    a_test_n = calibrate_anomaly(calib_raw, a_test)
 
     w = cfg["ensemble_weights"]
     final = w["classifier"] * p_test + w["anomaly"] * a_test_n  # graph added at serve time

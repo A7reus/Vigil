@@ -16,16 +16,22 @@ from features.build import FEATURE_COLS
 
 ART = Path("artifacts")
 _clf = _iso = None
+_calib: np.ndarray | None = None
 _feature_importance: dict[str, float] = {}
 
 
 def load_artifacts(art_dir: str | Path = ART):
-    global _clf, _iso, _feature_importance
+    global _clf, _iso, _calib, _feature_importance
     art_dir = Path(art_dir)
     _clf = joblib.load(art_dir / "classifier.pkl")
     _iso = joblib.load(art_dir / "anomaly.pkl")
     cols = json.loads((art_dir / "feature_cols.json").read_text())
     assert cols == FEATURE_COLS, "feature drift: retrain"
+    calib_path = art_dir / "anomaly_calib.npy"
+    try:
+        _calib = np.sort(np.load(calib_path)) if calib_path.exists() else None
+    except Exception:
+        _calib = None
     fi = getattr(_clf, "feature_importances_", None)
     if fi is None and hasattr(_clf, "coef_"):
         fi = np.abs(np.asarray(_clf.coef_).ravel())
@@ -35,8 +41,18 @@ def load_artifacts(art_dir: str | Path = ART):
 
 
 def _anomaly01(X: np.ndarray) -> np.ndarray:
+    """Percentile-normalize via TRAIN calibration (no test leakage).
+
+    Old code ranked a single row (always 1.0). Now uses searchsorted against
+    the sorted train-normal scores saved at train time. Falls back to 0.5 if
+    calibration is missing (e.g. artifacts trained before this fix).
+    """
+    assert _iso is not None, "call load_artifacts() first"
     s = -_iso.score_samples(X)
-    return pd.Series(s).rank(pct=True).to_numpy()
+    if _calib is None or len(_calib) == 0:
+        return np.full_like(s, 0.5, dtype=float)
+    idx = np.searchsorted(_calib, np.asarray(s, dtype=float), side="left")
+    return (idx / len(_calib)).astype(float)
 
 
 def explain_row(feat_row: dict, p_fraud: float) -> list[str]:
@@ -68,10 +84,36 @@ def explain_row(feat_row: dict, p_fraud: float) -> list[str]:
     return reasons[:3] or [f"classifier P(fraud)={p_fraud:.2f} with no single dominant rule"]
 
 
+def score_batch(X: np.ndarray, graph_boosts: np.ndarray | list[float] | float = 0.0,
+                weights: dict | None = None) -> np.ndarray:
+    """Vectorized risk scores for N rows (eval + queue pre-scoring).
+
+    Same formula as score_features but batched: one predict_proba call,
+    one score_samples call. graph_boosts are raw boosts (0..0.30).
+    """
+    if _clf is None or _iso is None:
+        load_artifacts()
+    assert _clf is not None and _iso is not None
+    weights = weights or {"classifier": 0.7, "anomaly": 0.2, "graph_boost": 0.1}
+    X = np.asarray(X, dtype=float)
+    p = _clf.predict_proba(X)[:, 1]
+    a = _anomaly01(X)
+    if np.isscalar(graph_boosts):
+        gb = np.full(len(X), float(graph_boosts))  # type: ignore[arg-type]
+    elif isinstance(graph_boosts, np.ndarray):
+        gb = graph_boosts.astype(float)
+    else:
+        gb = np.asarray(graph_boosts, dtype=float)
+    g = np.clip(gb, 0.0, 0.30) / 0.30
+    final = weights["classifier"] * p + weights["anomaly"] * a + weights["graph_boost"] * g
+    return np.clip(final, 0.0, 1.0)
+
+
 def score_features(feat_row: dict, graph_boost: float = 0.0,
                    weights: dict | None = None) -> dict:
     if _clf is None or _iso is None:
         load_artifacts()
+    assert _clf is not None
     weights = weights or {"classifier": 0.7, "anomaly": 0.2, "graph_boost": 0.1}
     X = np.array([[float(feat_row[c]) for c in FEATURE_COLS]])
     p = float(_clf.predict_proba(X)[0, 1])
