@@ -1,0 +1,105 @@
+"""Train classifier + anomaly detector. XGBoost if present, else sklearn HGB fallback.
+
+Usage:
+    python -m models.train --data data --artifacts artifacts --sample 50000
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+import yaml
+from sklearn.ensemble import HistGradientBoostingClassifier, IsolationForest
+from sklearn.metrics import average_precision_score, roc_auc_score
+
+from features.build import FEATURE_COLS, build_features
+
+try:
+    from xgboost import XGBClassifier  # type: ignore
+    HAS_XGB = True
+except Exception:
+    HAS_XGB = False
+
+
+def precision_at_k(y_true: np.ndarray, scores: np.ndarray, k: int = 100) -> float:
+    idx = np.argsort(scores)[::-1][:k]
+    return float(y_true[idx].mean()) if len(idx) else 0.0
+
+
+def recall_at_fpr(y_true: np.ndarray, scores: np.ndarray, fpr: float = 0.05) -> float:
+    from sklearn.metrics import roc_curve
+    fprs, tprs, _ = roc_curve(y_true, scores)
+    mask = fprs <= fpr
+    return float(tprs[mask].max()) if mask.any() else 0.0
+
+
+def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | None = None):
+    data_dir, art = Path(data_dir), Path(artifacts)
+    art.mkdir(parents=True, exist_ok=True)
+    cfg = yaml.safe_load(open("config/thresholds.yaml"))
+
+    customers = pd.read_csv(data_dir / "customers.csv")
+    devices = pd.read_csv(data_dir / "devices.csv")
+    txns = pd.read_csv(data_dir / "transactions.csv")
+    if sample and len(txns) > sample:
+        # stratified-ish: keep all fraud, sample normals
+        fraud = txns[txns.is_fraud == 1]
+        norm = txns[txns.is_fraud == 0].sample(n=sample - len(fraud), random_state=42)
+        txns = pd.concat([fraud, norm]).sort_values("timestamp").reset_index(drop=True)
+
+    feat = build_features(txns, customers, devices)
+    X = feat[FEATURE_COLS].to_numpy(dtype=float)
+    y = feat["is_fraud"].to_numpy(dtype=int)
+    tr = (feat["split"] == "train").to_numpy() if "split" in feat else np.arange(len(feat)) < int(0.8 * len(feat))
+    Xtr, ytr, Xte, yte = X[tr], y[tr], X[~tr], y[~tr]
+
+    if HAS_XGB:
+        clf = XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.06,
+                            subsample=0.9, colsample_bytree=0.8,
+                            scale_pos_weight=max(1.0, (ytr == 0).sum() / max(1, (ytr == 1).sum())),
+                            eval_metric="logloss", tree_method="hist", n_jobs=4)
+    else:
+        clf = HistGradientBoostingClassifier(max_iter=300, max_depth=6, learning_rate=0.06)
+    clf.fit(Xtr, ytr)
+
+    iso = IsolationForest(n_estimators=200, contamination="auto", random_state=42)
+    iso.fit(Xtr[ytr == 0][: min(20000, (ytr == 0).sum())])
+
+    p_test = clf.predict_proba(Xte)[:, 1]
+    a_test = (-iso.score_samples(Xte))  # higher = more anomalous
+    # normalize anomaly to 0..1 via rank
+    a_test_n = (pd.Series(a_test).rank(pct=True)).to_numpy()
+
+    w = cfg["ensemble_weights"]
+    final = w["classifier"] * p_test + w["anomaly"] * a_test_n  # graph added at serve time
+    metrics = {
+        "model": "xgboost" if HAS_XGB else "histgradientboosting",
+        "n_train": int(tr.sum()), "n_test": int((~tr).sum()),
+        "auc": round(float(roc_auc_score(yte, p_test)) if len(np.unique(yte)) > 1 else 0.0, 4),
+        "avg_precision": round(float(average_precision_score(yte, p_test)) if len(np.unique(yte)) > 1 else 0.0, 4),
+        "precision@100": round(precision_at_k(yte, final, 100), 4),
+        "recall@5%FPR": round(recall_at_fpr(yte, final, 0.05), 4),
+        "fraud_rate_test": round(float(yte.mean()), 4),
+    }
+    joblib.dump(clf, art / "classifier.pkl")
+    joblib.dump(iso, art / "anomaly.pkl")
+    (art / "feature_cols.json").write_text(json.dumps(FEATURE_COLS, indent=2))
+    # fraud address book for graph boost (from TRAIN only — no test leakage)
+    fset = set(txns[tr & (txns.is_fraud == 1).to_numpy()][["sender", "receiver"]].stack().tolist())
+    (art / "fraud_nodes.json").write_text(json.dumps(sorted(fset)))
+    (art / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    print(json.dumps(metrics, indent=2))
+    return metrics
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", default="data")
+    ap.add_argument("--artifacts", default="artifacts")
+    ap.add_argument("--sample", type=int, default=None)
+    a = ap.parse_args()
+    train(a.data, a.artifacts, a.sample)
