@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+# Data / artifacts (regenerable, large)
+data/
+artifacts/
+*.parquet
+*.db
+*.sqlite*
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+# Logs
+*.log

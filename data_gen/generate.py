@@ -1,0 +1,218 @@
+"""Generate synthetic upay-like MFS data with known injected fraud patterns.
+
+Tables:
+  customers(customer_id, age_group, district, account_age_days, avg_balance)
+  devices(device_id, customer_id, first_seen)
+  transactions(txn_id, sender, receiver, amount, type, timestamp,
+               device_id, location, channel, is_fraud, fraud_type, password_reset_flag)
+
+Patterns (documented assumptions):
+  Normal: salary-in monthly -> small P2P/merchant/bill out, same device/location, daytime (7-22).
+  Scam (~40% of fraud): small test credit then urgent large P2P out to NEW receiver,
+    night (22-5) or pressure-hour, new device, new receiver.
+  ATO (~25%): location jump (Dhaka<->Chattogram ~250km) within 10-60min + device change
+    + 5x velocity burst + password_reset_flag=1.
+  Mule (~25%): fan-in from ~10 wallets -> fan-out to 1 collector within 1h,
+    round amounts (9900, 19500, 49500, ...).
+  Agent anomaly (~10%): channel=cash-out via agent, volume 3x peer median.
+
+Split: chronological — last `test_frac` by timestamp is the clean test set (never train on it).
+"""
+
+from __future__ import annotations
+
+import argparse
+import random
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+DISTRICTS = ["Dhaka", "Chattogram", "Sylhet", "Khulna", "Rajshahi", "Barishal", "Rangpur", "Mymensingh"]
+# Approx coords for location-jump distance (lat, lon) — coarse, synthetic only.
+DISTRICT_COORDS = {
+    "Dhaka": (23.81, 90.41),
+    "Chattogram": (22.35, 91.83),
+    "Sylhet": (24.90, 91.87),
+    "Khulna": (22.82, 89.55),
+    "Rajshahi": (24.37, 88.60),
+    "Barishal": (22.70, 90.37),
+    "Rangpur": (25.75, 89.27),
+    "Mymensingh": (24.75, 90.40),
+}
+AGE_GROUPS = ["18-25", "26-35", "36-50", "50+"]
+TXN_TYPES = ["P2P", "merchant", "bill", "cash-out", "salary-in"]
+CHANNELS = ["app", "ussd", "agent"]
+ROUND_MULE_AMOUNTS = [9900, 19500, 19900, 29500, 49500, 49900]
+
+
+def _rng(seed: int) -> np.random.Generator:
+    return np.random.default_rng(seed)
+
+
+def gen_customers(n: int, rng: np.random.Generator) -> pd.DataFrame:
+    districts = rng.choice(DISTRICTS, size=n, p=[0.35, 0.15, 0.1, 0.1, 0.1, 0.07, 0.07, 0.06])
+    ages = rng.choice(AGE_GROUPS, size=n, p=[0.3, 0.35, 0.25, 0.1])
+    account_age = rng.integers(30, 1500, size=n)
+    avg_balance = np.round(rng.lognormal(mean=8.5, sigma=1.0, size=n), 2)  # ~5k median
+    return pd.DataFrame({
+        "customer_id": [f"C{i:06d}" for i in range(n)],
+        "age_group": ages,
+        "district": districts,
+        "account_age_days": account_age,
+        "avg_balance": avg_balance,
+    })
+
+
+def gen_devices(customers: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    rows = []
+    dev_n = 0
+    base = datetime(2024, 1, 1)
+    for _, c in customers.iterrows():
+        for _ in range(int(rng.choice([1, 1, 1, 2]))):
+            rows.append({
+                "device_id": f"D{dev_n:06d}",
+                "customer_id": c["customer_id"],
+                "first_seen": (base + timedelta(days=int(rng.integers(0, 600)))).isoformat(),
+            })
+            dev_n += 1
+    return pd.DataFrame(rows)
+
+
+def _daytime_hour(rng) -> int:
+    return int(rng.choice(list(range(7, 23)), p=np.ones(16) / 16))
+
+
+def _night_hour(rng) -> int:
+    return int(rng.choice([22, 23, 0, 1, 2, 3, 4, 5]))
+
+
+def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0.04,
+             days: int = 30, seed: int = 42):
+    rng = _rng(seed)
+    random.seed(seed)
+    customers = gen_customers(n_customers, rng)
+    devices = gen_devices(customers, rng)
+    dev_by_cust = devices.groupby("customer_id")["device_id"].apply(list).to_dict()
+    cust_district = dict(zip(customers.customer_id, customers.district))
+
+    start = datetime(2026, 8, 1, 0, 0, 0)
+    n_fraud = int(n_txns * fraud_rate)
+    n_normal = n_txns - n_fraud
+
+    txns = []
+    tid = 0
+
+    def add(sender, receiver, amount, ttype, ts, device, loc, channel, is_fraud=0, ftype="none", pwd=0):
+        nonlocal tid
+        txns.append({
+            "txn_id": f"T{tid:07d}", "sender": sender, "receiver": receiver,
+            "amount": round(float(amount), 2), "type": ttype,
+            "timestamp": ts.isoformat(), "device_id": device, "location": loc,
+            "channel": channel, "is_fraud": is_fraud, "fraud_type": ftype,
+            "password_reset_flag": pwd,
+        })
+        tid += 1
+
+    cust_ids = customers.customer_id.tolist()
+
+    # ---- Normal traffic ----
+    for _ in range(n_normal):
+        s = random.choice(cust_ids)
+        r = random.choice(cust_ids)
+        if r == s:
+            continue
+        ttype = random.choices(["P2P", "merchant", "bill", "cash-out", "salary-in"],
+                               weights=[0.4, 0.3, 0.15, 0.1, 0.05])[0]
+        if ttype == "salary-in":
+            amount = float(rng.choice([20000, 30000, 50000, 80000]) + rng.integers(-2000, 2000))
+        else:
+            amount = round(float(rng.lognormal(7.5, 0.9)), 2)  # ~1.8k median
+            amount = min(amount, 20000)
+        day = int(rng.integers(0, days))
+        ts = start + timedelta(days=day, hours=_daytime_hour(rng), minutes=int(rng.integers(0, 60)))
+        dev = random.choice(dev_by_cust[s])
+        loc = cust_district[s]  # same location normally
+        ch = random.choices(["app", "ussd", "agent"], weights=[0.7, 0.2, 0.1])[0]
+        add(s, r, amount, ttype, ts, dev, loc, ch)
+
+    # ---- Injected fraud ----
+    fraud_types = (["scam"] * int(n_fraud * 0.4) + ["ato"] * int(n_fraud * 0.25)
+                   + ["mule"] * int(n_fraud * 0.25))
+    fraud_types += ["agent"] * (n_fraud - len(fraud_types))
+    random.shuffle(fraud_types)
+
+    # Pre-pick mule collector rings: groups of 10 senders -> 1 collector
+    for ft in fraud_types:
+        day = int(rng.integers(0, days))
+        if ft == "scam":
+            s = random.choice(cust_ids)
+            r = random.choice(cust_ids)
+            # small test then urgent large out (emit the large one; test implied by amount pattern)
+            amount = float(rng.choice([15000, 25000, 45000, 80000]))
+            ts = start + timedelta(days=day, hours=_night_hour(rng), minutes=int(rng.integers(0, 60)))
+            new_dev = f"DX{tid:06d}"  # brand-new device not in registry
+            add(s, r, amount, "P2P", ts, new_dev, cust_district[s], "app", 1, "scam")
+        elif ft == "ato":
+            s = random.choice(cust_ids)
+            home = cust_district[s]
+            jump = "Chattogram" if home == "Dhaka" else "Dhaka"
+            # burst of 3-5 rapid txns; mark each
+            burst_t = start + timedelta(days=day, hours=int(rng.integers(0, 24)), minutes=0)
+            for k in range(int(rng.integers(3, 6))):
+                r = random.choice(cust_ids)
+                amount = float(rng.lognormal(9.0, 0.5))  # ~8k, 5x normal velocity/size
+                ts = burst_t + timedelta(minutes=int(k * rng.integers(2, 10)))
+                add(s, r, amount, "P2P", ts, f"DX{tid:06d}", jump if k > 0 else home,
+                    "app", 1, "ato", pwd=1 if k == 0 else 0)
+        elif ft == "mule":
+            collectors = random.sample(cust_ids, 1)
+            fanin = random.sample([c for c in cust_ids if c not in collectors], 10)
+            collector = collectors[0]
+            burst_t = start + timedelta(days=day, hours=int(rng.integers(10, 20)))
+            for s in fanin:
+                amount = float(random.choice(ROUND_MULE_AMOUNTS))
+                ts = burst_t + timedelta(minutes=int(rng.integers(0, 60)))
+                add(s, collector, amount, "P2P", ts, random.choice(dev_by_cust[s]),
+                    cust_district[s], "app", 1, "mule")
+        else:  # agent anomaly: big cash-outs 3x peer median
+            s = random.choice(cust_ids)
+            r = random.choice(cust_ids)
+            amount = float(rng.choice([60000, 90000, 120000]))
+            ts = start + timedelta(days=day, hours=_daytime_hour(rng))
+            add(s, r, amount, "cash-out", ts, random.choice(dev_by_cust[s]),
+                cust_district[s], "agent", 1, "agent")
+
+    df = pd.DataFrame(txns).sort_values("timestamp").reset_index(drop=True)
+    # reassign txn ids in time order
+    df["txn_id"] = [f"T{i:07d}" for i in range(len(df))]
+    return customers, devices, df
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--n-customers", type=int, default=5000)
+    ap.add_argument("--n-txns", type=int, default=50000)
+    ap.add_argument("--fraud-rate", type=float, default=0.04)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--out", type=str, default="data")
+    ap.add_argument("--test-frac", type=float, default=0.2)
+    args = ap.parse_args()
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    customers, devices, txns = generate(args.n_customers, args.n_txns, args.fraud_rate, seed=args.seed)
+    # chronological split markers
+    cut = txns.timestamp.quantile(1 - args.test_frac)
+    txns["split"] = (txns.timestamp > cut).map({True: "test", False: "train"})
+    customers.to_csv(out / "customers.csv", index=False)
+    devices.to_csv(out / "devices.csv", index=False)
+    txns.to_csv(out / "transactions.csv", index=False)
+    print(f"wrote {len(customers)} customers, {len(devices)} devices, {len(txns)} txns -> {out}")
+    print(txns.groupby(["split", "is_fraud"]).size())
+    print(txns.groupby("fraud_type").size())
+
+
+if __name__ == "__main__":
+    main()

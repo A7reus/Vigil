@@ -1,0 +1,22 @@
+# ScamShield thresholds — edit on-site in <30 min without touching ML code.
+# Score bands -> action. Never auto-block money: high impact stays human-reviewed.
+bands:
+  high: 0.85      # > high: step-up-auth + hold + analyst review
+  medium: 0.60    # medium..high: review, low..medium: allow
+
+ensemble_weights:
+  classifier: 0.7
+  anomaly: 0.2
+  graph_boost: 0.1
+
+graph:
+  two_hop_fraud_neighbors_threshold: 3
+  boost_per_hit: 0.15
+  max_boost: 0.30
+
+velocity:
+  window_1h: 1
+  window_24h: 24
+
+fairness:
+  sensitive_attrs: ["district", "age_group", "account_age_bucket"]
