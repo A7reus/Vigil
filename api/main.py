@@ -161,3 +161,15 @@ def decision(req: DecisionRequest):
     assert store is not None
     store.decisions.append({**req.model_dump(), "at": pd.Timestamp.utcnow().isoformat()})
     return {"ok": True, "logged": req.model_dump(), "pending_retrain": len(store.decisions)}
+
+
+# Analyst console (no build step): served from /web. API routes above take
+# precedence; this mount only handles / and static files.
+try:
+    from fastapi.staticfiles import StaticFiles
+
+    _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+    if _WEB_DIR.exists():
+        app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="web")
+except Exception:
+    pass

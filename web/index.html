@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vigil — ScamShield Analyst Console</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Vigil <span class="sub">ScamShield · Trust &amp; Risk Intelligence</span></h1>
+      <p id="health" class="health">connecting…</p>
+    </div>
+    <div class="controls">
+      <label>Queue
+        <select id="levelFilter">
+          <option value="">All levels</option>
+          <option value="High">High only</option>
+          <option value="Medium">Medium only</option>
+          <option value="Low">Low only</option>
+        </select>
+      </label>
+      <label>Lang
+        <select id="langSelect">
+          <option value="en">EN</option>
+          <option value="bn">BN</option>
+        </select>
+      </label>
+      <button id="refreshBtn">Refresh queue</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="queue">
+      <h2>Analyst queue <small id="queueCount"></small></h2>
+      <input id="searchBox" placeholder="filter by txn / sender / receiver…" />
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Risk</th><th>Txn</th><th>Route</th><th>Amount</th><th>Level</th><th>Action</th></tr>
+          </thead>
+          <tbody id="queueBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="detail">
+      <h2>Case detail</h2>
+      <div id="caseEmpty" class="empty">Select a row to see What happened / Why risky / What next.</div>
+      <div id="caseBox" hidden>
+        <div class="case-head">
+          <div><strong id="caseId"></strong><div id="caseMeta" class="muted"></div></div>
+          <span id="caseLevel" class="badge"></span>
+        </div>
+        <h3>Investigator narrative</h3>
+        <pre id="caseNarrative"></pre>
+        <h3>Top reasons</h3>
+        <ul id="caseReasons"></ul>
+        <h3>Components</h3>
+        <div id="caseComponents" class="grid"></div>
+        <h3>Sender timeline (last 10)</h3>
+        <ul id="caseTimeline" class="timeline"></ul>
+        <div class="decisions">
+          <button data-dec="allow">Allow</button>
+          <button data-dec="step-up">Step-up</button>
+          <button data-dec="freeze">Freeze + review</button>
+          <span id="decStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <h2>Score playground</h2>
+      <form id="scoreForm">
+        <div class="form-grid">
+          <input name="sender_id" value="C000001" required placeholder="sender_id" />
+          <input name="receiver_id" value="C000002" required placeholder="receiver_id" />
+          <input name="amount" type="number" step="0.01" min="1" value="45000" required />
+          <select name="channel"><option>app</option><option>ussd</option><option>agent</option></select>
+          <input name="device_id" value="DX999" placeholder="device_id" />
+          <input name="location" value="Dhaka" placeholder="location" />
+          <input name="timestamp" value="2026-08-15T23:10:00" required />
+          <select name="type"><option>P2P</option><option>merchant</option><option>bill</option><option>cash-out</option></select>
+        </div>
+        <button type="submit">Score transaction</button>
+      </form>
+      <pre id="scoreOut" class="empty">POST /score result appears here.</pre>
+    </section>
+  </main>
+
+  <footer>
+    <small>Vigil API: <code>GET /health · GET /alerts · GET /case/{id} · POST /score · POST /decision</code>
+    · Never auto-blocks money — high impact stays human-reviewed.</small>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>
