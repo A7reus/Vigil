@@ -78,19 +78,30 @@ python -m eval.evaluate --sample 20000      # offline metrics + fairness + busin
 ```
 
 ## Other configuration
-- `config/thresholds.yaml` — change bands/weights/graph thresholds on-site in <30 min, no ML retrain.
+- `config/thresholds.yaml` — change bands/weights/graph thresholds on-site in <30 min, no ML retrain. Bound cold start with `VIGIL_ALERTS_LIMIT=100`.
 - `api/llm.py: TEMPLATE_EN/BN` — prompt lives outside decision logic; toggle `lang: en|bn`.
 - `data/` + `artifacts/` are regenerable and git-ignored. Clean test split: last 20% by timestamp, never trained on. `artifacts/anomaly_calib.npy` is the train-only anomaly calibration (regenerated on retrain).
 - Synthetic-data assumptions documented in `data_gen/generate.py` header, including hardened noise (legit new-device/night/round-amount/reset/fan-in + fraud overlap). All amounts in BDT (৳).
+- Ops: `GET /health` (queue/startup info), `GET /metrics` (requests, decisions, startup). Structured logs via stdlib `logging`.
+- Security: open CORS is demo-only (see comment in `api/main.py`); restrict before prod. See `docs/security.md`.
+
+## Docs
+- `docs/logic-chain.md` — 9-step product logic + problem statement
+- `docs/data-dictionary.md` — tables, patterns, features
+- `docs/scale-plan.md` — readiness checklist + integration path + business math
+- `docs/security.md` — privacy, explainability, fairness, prompt-injection, oversight
+- `docs/onsite-runbook.md` — final-day playbook (triage → commit → demo)
+- `docs/eval-sample.json` — reference 50k eval output (model vs baseline + fairness + business)
 
 ## Project structure
 ```
 /data_gen    synthetic customers/devices/transactions (hardened, overlapping)
 /features    causal batch feature layer (same logic as online store)
 /models      train.py (clf+anomaly+calibration), graph.py (2-hop), infer.py (ensemble+batch)
-/api         FastAPI: main/store/rules/llm/schemas (+ static /web mount)
-/web         analyst console: index.html/app.js/styles.css (no build step)
+/api         FastAPI: main/store/rules/llm/schemas (+ static /web mount, /metrics)
+/web         analyst console: index.html/app.js/styles.css + favicon (no build step)
 /eval        metrics vs baseline + fairness + business sim (batched)
+/docs        logic-chain, data-dictionary, scale-plan, security, runbook, eval-sample
 /config      thresholds.yaml (on-site tunable)
 /tests /scripts
 ```
