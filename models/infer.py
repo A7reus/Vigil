@@ -18,10 +18,14 @@ ART = Path("artifacts")
 _clf = _iso = None
 _calib: np.ndarray | None = None
 _feature_importance: dict[str, float] = {}
+_explainer = None  # lazy SHAP TreeExplainer (built on first explained row)
+_explainer_broken = False  # set when shap/model combo fails — don't retry
 
 
 def load_artifacts(art_dir: str | Path = ART):
-    global _clf, _iso, _calib, _feature_importance
+    global _clf, _iso, _calib, _feature_importance, _explainer, _explainer_broken
+    _explainer = None  # model changed — rebuild lazily
+    _explainer_broken = False
     art_dir = Path(art_dir)
     _clf = joblib.load(art_dir / "classifier.pkl")
     _iso = joblib.load(art_dir / "anomaly.pkl")
@@ -74,7 +78,13 @@ def explain_row(feat_row: dict, p_fraud: float) -> list[str]:
         reasons.append("password reset just before transfer (ATO signal)")
     if int(feat_row.get("unusual_hour", 0)) == 1:
         reasons.append("unusual hour transfer")
-    # backfill with top model features if fewer than 3
+    # backfill with per-row SHAP attributions if fewer than 3;
+    # fall back to global importance when SHAP is unavailable
+    if len(reasons) < 3:
+        for r in _shap_backfill(feat_row, skip_substr=tuple(reasons)):
+            reasons.append(r)
+            if len(reasons) >= 3:
+                break
     if len(reasons) < 3 and _feature_importance:
         for k, _ in sorted(_feature_importance.items(), key=lambda kv: -kv[1]):
             if k not in ("amount",) and not any(k.replace("_", " ")[:6] in r for r in reasons):
@@ -82,6 +92,46 @@ def explain_row(feat_row: dict, p_fraud: float) -> list[str]:
             if len(reasons) >= 3:
                 break
     return reasons[:3] or [f"classifier P(fraud)={p_fraud:.2f} with no single dominant rule"]
+
+
+def _get_explainer():
+    """Lazily build a SHAP TreeExplainer (import ~1.4s, build ~0.04s, row ~1.4ms).
+
+    Returns None when shap is not installed or the model type is unsupported —
+    callers must fall back to global feature importance.
+    """
+    global _explainer, _explainer_broken
+    if _explainer is None and not _explainer_broken and _clf is not None:
+        try:
+            import shap  # type: ignore[import-not-found]  # lazy: keeps cold start fast
+
+            _explainer = shap.TreeExplainer(_clf)
+        except Exception:
+            _explainer_broken = True  # don't retry a broken combination
+    return _explainer
+
+
+def _shap_backfill(feat_row: dict, skip_substr: tuple = ()) -> list[str]:
+    """Top risk-increasing features for THIS row via SHAP (~1.4ms)."""
+    ex = _get_explainer()
+    if ex is None:
+        return []
+    try:
+        X = np.array([[float(feat_row[c]) for c in FEATURE_COLS]])
+        sv = np.asarray(ex.shap_values(X)).ravel()
+    except Exception:
+        return []
+    out = []
+    for i in np.argsort(-sv):  # most risk-increasing first
+        if sv[i] <= 0:
+            break
+        k = FEATURE_COLS[int(i)]
+        if k in ("amount",):
+            continue
+        if any(k.replace("_", " ")[:6] in r for r in list(skip_substr) + out):
+            continue
+        out.append(f"model signal: {k}={feat_row.get(k)} (+{float(sv[i]):.2f})")
+    return out
 
 
 def score_batch(X: np.ndarray, graph_boosts: np.ndarray | list[float] | float = 0.0,

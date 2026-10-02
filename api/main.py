@@ -207,7 +207,7 @@ def case(txn_id: str, lang: str = "en"):
 @app.post("/decision")
 def decision(req: DecisionRequest):
     assert store is not None
-    store.decisions.append({**req.model_dump(), "at": pd.Timestamp.utcnow().isoformat()})
+    store.decisions.append({**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()})
     log.info("decision %s -> %s by %s", req.txn_id, req.decision, req.analyst)
     return {"ok": True, "logged": req.model_dump(), "pending_retrain": len(store.decisions)}
 
