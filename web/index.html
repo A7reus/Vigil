@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Vigil ScamShield analyst console: risk queue, case investigation, scoring playground." />
   <title>Vigil — ScamShield Analyst Console</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -31,16 +33,29 @@
     </div>
   </header>
 
+  <div id="errorBar" class="errorbar" hidden></div>
+
   <main>
     <section class="queue">
       <h2>Analyst queue <small id="queueCount"></small></h2>
-      <input id="searchBox" placeholder="filter by txn / sender / receiver…" />
+      <div class="queue-tools">
+        <input id="searchBox" placeholder="filter by txn / sender / receiver…" />
+        <label>Sort
+          <select id="sortSelect">
+            <option value="risk">Risk ↓</option>
+            <option value="amount">Amount ↓</option>
+          </select>
+        </label>
+        <label>Min risk <span id="minRiskVal">0.00</span>
+          <input id="minRisk" type="range" min="0" max="1" step="0.05" value="0" />
+        </label>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr><th>Risk</th><th>Txn</th><th>Route</th><th>Amount</th><th>Level</th><th>Action</th></tr>
           </thead>
-          <tbody id="queueBody"></tbody>
+          <tbody id="queueBody"><tr><td colspan="6" class="muted">loading queue…</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -59,7 +74,9 @@
         <ul id="caseReasons"></ul>
         <h3>Components</h3>
         <div id="caseComponents" class="grid"></div>
-        <h3>Sender timeline (last 10)</h3>
+        <h3>Mule-ring proximity (2-hop fraud neighbors)</h3>
+        <div id="caseGraph" class="muted">—</div>
+        <h3>Wallet timeline (last 10 sends + receives)</h3>
         <ul id="caseTimeline" class="timeline"></ul>
         <div class="decisions">
           <button data-dec="allow">Allow</button>

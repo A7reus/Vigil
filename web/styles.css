@@ -27,3 +27,7 @@ pre { background:#0c1116; padding:.75rem; border-radius:8px; white-space:pre-wra
 .form-grid { display:grid; grid-template-columns: repeat(2, 1fr); gap:.5rem; margin-bottom:.5rem; }
 .decisions { display:flex; gap:.5rem; align-items:center; margin-top:.75rem; }
 footer { padding:1rem 1.5rem; color:var(--muted); }
+.errorbar { background:#3d0d0f; color:#ffb4b8; border-bottom:1px solid var(--high); padding:.6rem 1.5rem; font-size:.85rem; }
+.queue-tools { display:flex; gap:.75rem; align-items:end; flex-wrap:wrap; margin-bottom:.5rem; }
+.queue-tools label { display:flex; flex-direction:column; font-size:.75rem; color:var(--muted); }
+.queue-tools input[type="range"] { width:120px; }

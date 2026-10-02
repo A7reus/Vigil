@@ -1,20 +1,32 @@
 let queue = [];
 let selectedId = null;
+const decided = {};
 
 const $ = (id) => document.getElementById(id);
 
+function showError(msg) {
+  const bar = $('errorBar');
+  bar.hidden = false;
+  bar.textContent = msg;
+}
+function clearError() { $('errorBar').hidden = true; }
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error(`${path} -> ${r.status} ${txt.slice(0, 160)}`);
+  }
   return r.json();
 }
 
 async function checkHealth() {
   try {
     const h = await api('/health');
-    $('health').textContent = `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes`;
+    $('health').textContent =
+      `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes · queue ${h.queue_size}`;
     $('health').className = 'health ok';
-  } catch {
+  } catch (err) {
     $('health').textContent = 'API offline — start with: uvicorn api.main:app --port 8000';
     $('health').className = 'health bad';
   }
@@ -25,73 +37,109 @@ function badge(level) {
 }
 
 async function loadQueue() {
-  const level = $('levelFilter').value;
-  const q = level ? `?limit=200&level=${level}` : '?limit=200';
-  const data = await api(`/alerts${q}`);
-  queue = data.alerts || [];
-  renderQueue();
+  clearError();
+  $('queueBody').innerHTML = '<tr><td colspan="6" class="muted">loading queue…</td></tr>';
+  try {
+    const level = $('levelFilter').value;
+    const q = level ? `?limit=200&level=${level}` : '?limit=200';
+    const data = await api(`/alerts${q}`);
+    queue = data.alerts || [];
+    renderQueue();
+  } catch (err) {
+    $('queueBody').innerHTML = '<tr><td colspan="6" class="muted">queue failed to load</td></tr>';
+    showError(`Queue failed: ${err.message}`);
+  }
 }
 
 function renderQueue() {
   const f = $('searchBox').value.toLowerCase();
-  const rows = queue.filter((r) =>
-    !f ||
-    r.txn_id.toLowerCase().includes(f) ||
-    (r.sender_id || '').toLowerCase().includes(f) ||
-    (r.receiver_id || '').toLowerCase().includes(f)
+  const minRisk = parseFloat($('minRisk').value || '0');
+  $('minRiskVal').textContent = minRisk.toFixed(2);
+  const sortBy = $('sortSelect').value;
+  let rows = queue.filter((r) =>
+    (r.risk_score >= minRisk) &&
+    (!f || r.txn_id.toLowerCase().includes(f) ||
+      (r.sender_id || '').toLowerCase().includes(f) ||
+      (r.receiver_id || '').toLowerCase().includes(f))
   );
+  rows = rows.slice().sort((a, b) =>
+    sortBy === 'amount' ? b.amount - a.amount : b.risk_score - a.risk_score);
   $('queueCount').textContent = `· ${rows.length} shown`;
+  if (!rows.length) {
+    $('queueBody').innerHTML = '<tr><td colspan="6" class="muted">no alerts match filters</td></tr>';
+    return;
+  }
   $('queueBody').innerHTML = rows.map((r) => `
     <tr data-id="${r.txn_id}" class="${r.txn_id === selectedId ? 'sel' : ''}">
-      <td><strong>${r.risk_score.toFixed(2)}</strong></td>
+      <td><strong>${r.risk_score.toFixed(2)}</strong>${decided[r.txn_id] ? ` <span class="muted">(${decided[r.txn_id]})</span>` : ''}</td>
       <td><code>${r.txn_id}</code></td>
       <td><code>${r.sender_id} → ${r.receiver_id}</code></td>
       <td>৳${Number(r.amount).toLocaleString()}</td>
       <td>${badge(r.risk_level)}</td>
       <td class="muted">${r.recommended_action}</td>
     </tr>`).join('');
-  document.querySelectorAll('#queueBody tr').forEach((tr) =>
+  document.querySelectorAll('#queueBody tr[data-id]').forEach((tr) =>
     tr.addEventListener('click', () => openCase(tr.dataset.id)));
 }
 
 async function openCase(id) {
   selectedId = id;
+  clearError();
   renderQueue();
-  const lang = $('langSelect').value;
-  const c = await api(`/case/${id}?lang=${lang}`);
   $('caseEmpty').hidden = true;
   $('caseBox').hidden = false;
-  $('caseId').textContent = c.txn_id;
-  $('caseMeta').textContent =
-    `${c.sender_id} → ${c.receiver_id} · ৳${Number(c.amount).toLocaleString()} · ${c.channel} · ${c.timestamp}`;
-  $('caseLevel').textContent = `${c.risk_level} · ${c.risk_score.toFixed(2)}`;
-  $('caseLevel').className = `badge ${c.risk_level}`;
-  $('caseNarrative').textContent = c.narrative || '(no narrative)';
-  $('caseReasons').innerHTML = (c.top_3_reasons || []).map((x) => `<li>${x}</li>`).join('');
-  const comp = c.components || { p_fraud: c.p_fraud, anomaly: c.anomaly, graph_boost: c.graph_boost };
-  $('caseComponents').innerHTML = Object.entries({
-    'P(fraud)': comp.p_fraud ?? c.p_fraud,
-    anomaly: comp.anomaly ?? c.anomaly,
-    graph_boost: comp.graph_boost ?? c.graph_boost,
-    fraud_neighbors_2hop: c.fraud_neighbors_2hop,
-    latency_ms: comp.latency_ms,
-  }).filter(([, v]) => v !== undefined).map(([k, v]) => `<div><b>${k}</b><span>${v}</span></div>`).join('');
-  $('caseTimeline').innerHTML = (c.timeline || []).map((t) =>
-    `<li><code>${t.txn_id}</code> → <code>${t.receiver}</code> ৳${Number(t.amount).toLocaleString()} <span class="muted">${t.timestamp} · ${t.location}</span></li>`).join('') || '<li class="muted">no history</li>';
-  $('decStatus').textContent = '';
+  $('caseNarrative').textContent = 'loading case…';
+  try {
+    const lang = $('langSelect').value;
+    const c = await api(`/case/${id}?lang=${lang}`);
+    $('caseId').textContent = c.txn_id;
+    $('caseMeta').textContent =
+      `${c.sender_id} → ${c.receiver_id} · ৳${Number(c.amount).toLocaleString()} · ${c.channel} · ${c.timestamp}`;
+    $('caseLevel').textContent = `${c.risk_level} · ${c.risk_score.toFixed(2)}`;
+    $('caseLevel').className = `badge ${c.risk_level}`;
+    $('caseNarrative').textContent = c.narrative || '(no narrative)';
+    $('caseReasons').innerHTML = (c.top_3_reasons || []).map((x) => `<li>${x}</li>`).join('');
+    const comp = c.components || { p_fraud: c.p_fraud, anomaly: c.anomaly, graph_boost: c.graph_boost };
+    $('caseComponents').innerHTML = Object.entries({
+      'P(fraud)': comp.p_fraud ?? c.p_fraud,
+      anomaly: comp.anomaly ?? c.anomaly,
+      graph_boost: comp.graph_boost ?? c.graph_boost,
+      fraud_neighbors_2hop: c.fraud_neighbors_2hop,
+      latency_ms: comp.latency_ms,
+    }).filter(([, v]) => v !== undefined).map(([k, v]) => `<div><b>${k}</b><span>${v}</span></div>`).join('');
+    const sample = c.fraud_neighbor_sample || [];
+    $('caseGraph').innerHTML = c.fraud_neighbors_2hop
+      ? `<code>${c.receiver_id}</code> ↔ <span class="muted">${c.fraud_neighbors_2hop} fraud within 2 hops</span><br/>` +
+        (sample.length ? sample.map((n) => `<code>${n}</code>`).join(' · ') : '<span class="muted">no sample</span>')
+      : '<span class="muted">no fraud proximity — receiver is clean in the 2-hop graph</span>';
+    $('caseTimeline').innerHTML = (c.timeline || []).map((t) =>
+      `<li><code>${t.sender} → ${t.receiver}</code> ৳${Number(t.amount).toLocaleString()} <span class="muted">${t.timestamp} · ${t.location}</span></li>`).join('') || '<li class="muted">no history</li>';
+    $('decStatus').textContent = decided[id] ? `logged: ${decided[id]}` : '';
+  } catch (err) {
+    $('caseNarrative').textContent = 'case failed to load';
+    showError(`Case failed: ${err.message}`);
+  }
 }
 
 async function sendDecision(decision) {
   if (!selectedId) return;
-  await api('/decision', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ txn_id: selectedId, decision, analyst: 'analyst-1' }),
-  });
-  $('decStatus').textContent = `logged: ${decision}`;
+  try {
+    await api('/decision', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txn_id: selectedId, decision, analyst: 'analyst-1' }),
+    });
+    decided[selectedId] = decision;
+    $('decStatus').textContent = `logged: ${decision}`;
+    renderQueue();
+  } catch (err) {
+    showError(`Decision failed: ${err.message}`);
+  }
 }
 
 $('refreshBtn').addEventListener('click', loadQueue);
 $('levelFilter').addEventListener('change', loadQueue);
+$('sortSelect').addEventListener('change', renderQueue);
+$('minRisk').addEventListener('input', renderQueue);
 $('langSelect').addEventListener('change', () => selectedId && openCase(selectedId));
 $('searchBox').addEventListener('input', renderQueue);
 document.querySelectorAll('.decisions button').forEach((b) =>
@@ -99,6 +147,7 @@ document.querySelectorAll('.decisions button').forEach((b) =>
 
 $('scoreForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  clearError();
   const fd = new FormData(e.target);
   const body = {
     sender_id: fd.get('sender_id'), receiver_id: fd.get('receiver_id'),
@@ -106,6 +155,7 @@ $('scoreForm').addEventListener('submit', async (e) => {
     device_id: fd.get('device_id'), location: fd.get('location'),
     timestamp: fd.get('timestamp'), type: fd.get('type'), lang: $('langSelect').value,
   };
+  $('scoreOut').textContent = 'scoring…';
   try {
     const out = await api('/score', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -114,6 +164,7 @@ $('scoreForm').addEventListener('submit', async (e) => {
     $('scoreOut').className = '';
   } catch (err) {
     $('scoreOut').textContent = `error: ${err.message}`;
+    showError(`Score failed: ${err.message}`);
   }
 });
 
