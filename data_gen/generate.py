@@ -7,14 +7,23 @@ Tables:
                device_id, location, channel, is_fraud, fraud_type, password_reset_flag)
 
 Patterns (documented assumptions):
-  Normal: salary-in monthly -> small P2P/merchant/bill out, same device/location, daytime (7-22).
+  Normal: salary-in monthly -> small P2P/merchant/bill out, same device/location,
+    daytime (7-22) mostly. With realistic noise: ~5% legit new-device (new phone),
+    ~8% legit night txns, ~3% legit round amounts, ~1% legit password resets,
+    ~5% legit large cash-outs, ~2% travel location changes, plus popular-merchant
+    fan-in bursts (legit) so fan-in alone is not perfectly separable.
   Scam (~40% of fraud): small test credit then urgent large P2P out to NEW receiver,
-    night (22-5) or pressure-hour, new device, new receiver.
-  ATO (~25%): location jump (Dhaka<->Chattogram ~250km) within 10-60min + device change
-    + 5x velocity burst + password_reset_flag=1.
-  Mule (~25%): fan-in from ~10 wallets -> fan-out to 1 collector within 1h,
-    round amounts (9900, 19500, 49500, ...).
-  Agent anomaly (~10%): channel=cash-out via agent, volume 3x peer median.
+    night (22-5) or pressure-hour, new device, new receiver. Hardened: ~20% use a
+    known device, ~25% occur in daytime, ~30% use smaller overlapping amounts
+    (3k-12k) to mimic normal spending.
+  ATO (~25%): location jump (Dhaka<->Chattogram ~250km) within 10-60min + device
+    change + velocity burst + usually password_reset_flag=1. Hardened: ~20% have
+    no reset flag, ~15% use normal-sized amounts, ~10% are short 2-txn bursts.
+  Mule (~20%): fan-in from ~10 wallets -> fan-out to 1 collector within 1h,
+    usually round amounts (9900, 19500, 49500, ...). Hardened: ~25% use near-round
+    off-by amounts to dodge exact-match rules.
+  Agent anomaly (~15%): channel=cash-out via agent, volume 3x peer median.
+    Hardened: ~30% use smaller overlapping amounts (25k-45k).
 
 Split: chronological — last `test_frac` by timestamp is the clean test set (never train on it).
 """
@@ -117,7 +126,7 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
 
     cust_ids = customers.customer_id.tolist()
 
-    # ---- Normal traffic ----
+    # ---- Normal traffic (with realistic noise so fraud is not trivially separable) ----
     for _ in range(n_normal):
         s = random.choice(cust_ids)
         r = random.choice(cust_ids)
@@ -127,15 +136,49 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
                                weights=[0.4, 0.3, 0.15, 0.1, 0.05])[0]
         if ttype == "salary-in":
             amount = float(rng.choice([20000, 30000, 50000, 80000]) + rng.integers(-2000, 2000))
+        elif ttype == "cash-out" and rng.random() < 0.05:
+            # legit large business cash-out: overlaps agent-fraud amounts
+            amount = round(float(rng.choice([30000, 40000, 50000, 60000]) + rng.integers(-3000, 3000)), 2)
         else:
             amount = round(float(rng.lognormal(7.5, 0.9)), 2)  # ~1.8k median
             amount = min(amount, 20000)
+            if rng.random() < 0.03:
+                # legit round payment (e.g. 9,900 merchant bill): overlaps mule rule
+                amount = float(random.choice(ROUND_MULE_AMOUNTS))
         day = int(rng.integers(0, days))
-        ts = start + timedelta(days=day, hours=_daytime_hour(rng), minutes=int(rng.integers(0, 60)))
-        dev = random.choice(dev_by_cust[s])
-        loc = cust_district[s]  # same location normally
+        if rng.random() < 0.08:
+            hour = _night_hour(rng)  # legit late-night txn
+        else:
+            hour = _daytime_hour(rng)
+        ts = start + timedelta(days=day, hours=hour, minutes=int(rng.integers(0, 60)))
+        if rng.random() < 0.05:
+            dev = f"DXL{tid:06d}"  # legit new phone, not fraud
+        else:
+            dev = random.choice(dev_by_cust[s])
+        if rng.random() < 0.02:
+            # legit travel: different district but normal behavior
+            loc = random.choice([d for d in DISTRICTS if d != cust_district[s]])
+        else:
+            loc = cust_district[s]
         ch = random.choices(["app", "ussd", "agent"], weights=[0.7, 0.2, 0.1])[0]
-        add(s, r, amount, ttype, ts, dev, loc, ch)
+        pwd = 1 if rng.random() < 0.01 else 0  # legit password reset, no fraud
+        add(s, r, amount, ttype, ts, dev, loc, ch, pwd=pwd)
+
+    # ---- Legit popular-merchant fan-in (non-fraud bursts so fan-in is not perfect) ----
+    n_merchants = max(3, n_normal // 10000)
+    for _ in range(n_merchants):
+        merchant = random.choice(cust_ids)
+        burst_day = int(rng.integers(0, days))
+        burst_t = start + timedelta(days=burst_day, hours=int(rng.integers(11, 20)))
+        for _ in range(int(rng.integers(15, 30))):
+            s = random.choice(cust_ids)
+            if s == merchant:
+                continue
+            amount = round(float(rng.lognormal(7.5, 0.9)), 2)
+            amount = min(amount, 20000)
+            ts = burst_t + timedelta(minutes=int(rng.integers(0, 60)))
+            dev = random.choice(dev_by_cust[s])
+            add(s, merchant, amount, "merchant", ts, dev, cust_district[s], "app")
 
     # ---- Injected fraud (budget by TXN count so mule fan-out doesn't inflate rate) ----
     target_fraud_txns = n_fraud
@@ -151,24 +194,41 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
         if ft == "scam":
             s = random.choice(cust_ids)
             r = random.choice(cust_ids)
-            # small test then urgent large out (emit the large one; test implied by amount pattern)
-            amount = float(rng.choice([15000, 25000, 45000, 80000]))
-            ts = start + timedelta(days=day, hours=_night_hour(rng), minutes=int(rng.integers(0, 60)))
-            new_dev = f"DX{tid:06d}"  # brand-new device not in registry
+            # Hardened: 30% small overlapping amounts, 25% daytime, 20% known device
+            if rng.random() < 0.30:
+                amount = round(float(rng.lognormal(8.0, 0.7)), 2)  # 3k-12k overlaps normal
+                amount = min(max(amount, 2000), 15000)
+            else:
+                amount = float(rng.choice([15000, 25000, 45000, 80000]))
+            if rng.random() < 0.25:
+                ts = start + timedelta(days=day, hours=_daytime_hour(rng),
+                                       minutes=int(rng.integers(0, 60)))
+            else:
+                ts = start + timedelta(days=day, hours=_night_hour(rng), minutes=int(rng.integers(0, 60)))
+            if rng.random() < 0.20:
+                new_dev = random.choice(dev_by_cust[s])  # compromised known device
+            else:
+                new_dev = f"DX{tid:06d}"  # brand-new device not in registry
             add(s, r, amount, "P2P", ts, new_dev, cust_district[s], "app", 1, "scam")
             fraud_txns += 1
         elif ft == "ato":
             s = random.choice(cust_ids)
             home = cust_district[s]
             jump = "Chattogram" if home == "Dhaka" else "Dhaka"
-            # burst of 3-5 rapid txns; mark each
+            # Hardened: 10% short 2-txn burst, else 3-5 rapid txns
+            burst_len = 2 if rng.random() < 0.10 else int(rng.integers(3, 6))
+            no_pwd = rng.random() < 0.20  # 20% without reset flag
+            small_amt = rng.random() < 0.15  # 15% normal-sized amounts
             burst_t = start + timedelta(days=day, hours=int(rng.integers(0, 24)), minutes=0)
-            for k in range(int(rng.integers(3, 6))):
+            for k in range(burst_len):
                 r = random.choice(cust_ids)
-                amount = float(rng.lognormal(9.0, 0.5))  # ~8k, 5x normal velocity/size
+                if small_amt:
+                    amount = round(float(rng.lognormal(7.5, 0.9)), 2)
+                else:
+                    amount = float(rng.lognormal(9.0, 0.5))  # ~8k, 5x normal velocity/size
                 ts = burst_t + timedelta(minutes=int(k * rng.integers(2, 10)))
                 add(s, r, amount, "P2P", ts, f"DX{tid:06d}", jump if k > 0 else home,
-                    "app", 1, "ato", pwd=1 if k == 0 else 0)
+                    "app", 1, "ato", pwd=0 if no_pwd else (1 if k == 0 else 0))
                 fraud_txns += 1
         elif ft == "mule":
             collectors = random.sample(cust_ids, 1)
@@ -176,17 +236,27 @@ def generate(n_customers: int = 5000, n_txns: int = 50000, fraud_rate: float = 0
             collector = collectors[0]
             burst_t = start + timedelta(days=day, hours=int(rng.integers(10, 20)))
             for s in fanin:
-                amount = float(random.choice(ROUND_MULE_AMOUNTS))
+                if rng.random() < 0.25:
+                    # near-round off-by amount to dodge exact-match rules
+                    base = float(random.choice(ROUND_MULE_AMOUNTS))
+                    amount = round(base + float(rng.integers(-600, 600)), 2)
+                    if int(round(amount)) in set(ROUND_MULE_AMOUNTS):
+                        amount += 37.0
+                else:
+                    amount = float(random.choice(ROUND_MULE_AMOUNTS))
                 ts = burst_t + timedelta(minutes=int(rng.integers(0, 60)))
                 add(s, collector, amount, "P2P", ts, random.choice(dev_by_cust[s]),
                     cust_district[s], "app", 1, "mule")
                 fraud_txns += 1
                 if fraud_txns >= target_fraud_txns:
                     break
-        else:  # agent anomaly: big cash-outs 3x peer median
+        else:  # agent anomaly: big cash-outs 3x peer median (hardened: 30% smaller overlap)
             s = random.choice(cust_ids)
             r = random.choice(cust_ids)
-            amount = float(rng.choice([60000, 90000, 120000]))
+            if rng.random() < 0.30:
+                amount = round(float(rng.choice([25000, 35000, 45000]) + rng.integers(-3000, 3000)), 2)
+            else:
+                amount = float(rng.choice([60000, 90000, 120000]))
             ts = start + timedelta(days=day, hours=_daytime_hour(rng))
             add(s, r, amount, "cash-out", ts, random.choice(dev_by_cust[s]),
                 cust_district[s], "agent", 1, "agent")
