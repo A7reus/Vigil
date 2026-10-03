@@ -36,6 +36,17 @@
   <div id="errorBar" class="errorbar" hidden></div>
 
   <main>
+    <section id="walkthrough" class="walk" hidden>
+      <div>
+        <strong>New here? Three steps, two minutes:</strong>
+        <ol>
+          <li><b>Browse the queue</b> on the left — riskiest first. Click any row.</li>
+          <li><b>Read the case</b> — narrative, reasons, mule-ring panel, timeline. Try EN/BN.</li>
+          <li><b>Try the playground</b> below — fill an example, score it, log a decision.</li>
+        </ol>
+      </div>
+      <button id="walkDismiss">Got it</button>
+    </section>
     <section class="queue">
       <h2>Analyst queue <small id="queueCount"></small></h2>
       <div class="queue-tools">
@@ -87,17 +98,30 @@
       </div>
 
       <h2>Score playground</h2>
+      <p class="muted">Describe one transfer as the API sees it, then score it. Unknown IDs are fine.</p>
+      <div class="examples">
+        <button id="fillScam" type="button">Fill scam example</button>
+        <button id="fillNormal" type="button">Fill normal example</button>
+      </div>
       <form id="scoreForm">
         <div class="form-grid">
-          <input name="sender_id" value="C000001" required placeholder="sender_id" />
-          <input name="receiver_id" value="C000002" required placeholder="receiver_id" />
-          <input name="amount" type="number" step="0.01" min="1" value="45000" required />
-          <select name="channel"><option>app</option><option>ussd</option><option>agent</option></select>
-          <input name="device_id" value="DX999" placeholder="device_id" />
-          <input name="location" value="Dhaka" placeholder="location" />
-          <input name="timestamp" value="2026-08-15T23:10:00" required />
-          <select name="type"><option>P2P</option><option>merchant</option><option>bill</option><option>cash-out</option></select>
-          <label class="check"><input type="checkbox" name="pwd_reset" value="1" /> password reset just before (ATO signal)</label>
+          <label>Sender wallet ID <span class="hint">who sends; the customer being scored</span>
+            <input name="sender_id" value="C000001" required placeholder="e.g. C000001" /></label>
+          <label>Receiver wallet ID <span class="hint">who gets the money</span>
+            <input name="receiver_id" value="C000002" required placeholder="e.g. C000002" /></label>
+          <label>Amount in BDT <span class="hint">large vs the sender's average looks risky</span>
+            <input name="amount" type="number" step="0.01" min="1" value="45000" required placeholder="e.g. 45000" /></label>
+          <label>Channel <span class="hint">how the money moves</span>
+            <select name="channel"><option>app</option><option>ussd</option><option>agent</option></select></label>
+          <label>Device ID <span class="hint">a never-seen ID looks suspicious</span>
+            <input name="device_id" value="DX999" placeholder="e.g. DX999" /></label>
+          <label>Location <span class="hint">district; jumps from home look risky</span>
+            <input name="location" value="Dhaka" placeholder="e.g. Dhaka" /></label>
+          <label>Timestamp <span class="hint">ISO date-time; nights look risky</span>
+            <input name="timestamp" value="2026-08-15T23:10:00" required placeholder="e.g. 2026-08-15T23:10:00" /></label>
+          <label>Type <span class="hint">kind of transfer</span>
+            <select name="type"><option>P2P</option><option>merchant</option><option>bill</option><option>cash-out</option></select></label>
+          <label class="check"><input type="checkbox" name="pwd_reset" value="1" /> password was reset just before (account-takeover signal)</label>
         </div>
         <button type="submit">Score transaction</button>
       </form>

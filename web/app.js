@@ -30,9 +30,12 @@ async function api(path, opts) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function checkHealth(retries = 3) {
-  // Free-tier hosts sleep and redeploy; the first attempt often races the
-  // wake-up, so retry with backoff and always report the real reason.
+async function checkHealth(retries = 5) {
+  // Free-tier hosts sleep and redeploy; attempts often race the wake-up, so
+  // retry with backoff and always report the real reason. The /health link
+  // lets you tell a browser/network problem (link fails too) from a console
+  // bug (link works) without any tooling.
+  let lastErr = '';
   for (let i = 0; i < retries; i++) {
     try {
       const h = await api('/health');
@@ -41,14 +44,17 @@ async function checkHealth(retries = 3) {
       $('health').className = 'health ok';
       return;
     } catch (err) {
-      $('health').textContent = `API unreachable (${err.message}) — retrying…`;
+      lastErr = err.message;
+      $('health').textContent = `contacting API (try ${i + 1}/${retries})…`;
       $('health').className = 'health bad';
       await sleep(3000 * (i + 1));
     }
   }
-  $('health').textContent =
-    'API offline — if self-hosting, start with: uvicorn api.main:app --port 8000. ' +
-    'On hosted demo, hard-refresh (the service may be waking from sleep).';
+  $('health').innerHTML =
+    `API offline (${esc(lastErr)}). Self-hosting? start: ` +
+    `<code>uvicorn api.main:app --port 8000</code>. Hosted demo? open ` +
+    `<a href="/health" target="_blank" rel="noopener">/health</a> directly: ` +
+    `if it fails too, the network or host is down; if it works, hard-refresh this page.`;
   $('health').className = 'health bad';
 }
 
@@ -188,6 +194,35 @@ $('scoreForm').addEventListener('submit', async (e) => {
     showError(`Score failed: ${err.message}`);
   }
 });
+
+// First-run walkthrough, remembered per browser.
+try {
+  if (!localStorage.getItem('vigil_walkthrough')) $('walkthrough').hidden = false;
+} catch { /* private mode: stay quiet, console still works */ }
+$('walkDismiss').addEventListener('click', () => {
+  $('walkthrough').hidden = true;
+  try { localStorage.setItem('vigil_walkthrough', 'done'); } catch { /* ignore */ }
+});
+
+function fillForm(values) {
+  const form = $('scoreForm');
+  for (const [name, value] of Object.entries(values)) {
+    const el = form.elements[name];
+    if (!el) continue;
+    if (el.type === 'checkbox') el.checked = Boolean(value);
+    else el.value = value;
+  }
+}
+$('fillScam').addEventListener('click', () => fillForm({
+  sender_id: 'C000001', receiver_id: 'C000002', amount: 45000, channel: 'app',
+  device_id: 'DX999', location: 'Dhaka', timestamp: '2026-08-15T23:10:00',
+  type: 'P2P', pwd_reset: false,
+}));
+$('fillNormal').addEventListener('click', () => fillForm({
+  sender_id: 'C000001', receiver_id: 'C000002', amount: 1800, channel: 'app',
+  device_id: 'D000001', location: 'Dhaka', timestamp: '2026-08-15T14:10:00',
+  type: 'merchant', pwd_reset: false,
+}));
 
 checkHealth();
 loadQueue();
