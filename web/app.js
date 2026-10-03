@@ -19,6 +19,14 @@ function showError(msg) {
 }
 function clearError() { $('errorBar').hidden = true; }
 
+// Per-endpoint last outcome, always visible: tells a dead server
+// (all FAIL) apart from a sick one (mixed results) with no devtools.
+const diag = { health: '…', alerts: '…' };
+function renderDiag() {
+  const el = $('diagLine');
+  if (el) el.textContent = `health: ${diag.health} · alerts: ${diag.alerts}`;
+}
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
   if (!r.ok) {
@@ -44,11 +52,15 @@ async function checkHealth(retries = 5) {
       $('health').textContent =
         `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes · queue ${h.queue_size}`;
       $('health').className = 'health ok';
+      diag.health = `ok (${h.queue_size} queued)`;
+      renderDiag();
       clearError();
       if (!queueLoaded) loadQueue();  // we arrived during an outage; catch up
       return true;
     } catch (err) {
       lastErr = err.message;
+      diag.health = `FAIL (${err.message})`;
+      renderDiag();
       $('health').textContent = `contacting API (try ${i + 1}/${retries})…`;
       $('health').className = 'health bad';
       await sleep(3000 * (i + 1));
@@ -82,8 +94,12 @@ async function loadQueue() {
     const q = level ? `?limit=200&level=${level}` : '?limit=200';
     const data = await api(`/alerts${q}`);
     queue = data.alerts || [];
+    diag.alerts = `ok (${queue.length})`;
+    renderDiag();
     renderQueue();
   } catch (err) {
+    diag.alerts = `FAIL (${err.message})`;
+    renderDiag();
     $('queueBody').innerHTML = '<tr><td colspan="6" class="muted">queue failed to load</td></tr>';
     showError(`Queue failed: ${err.message}`);
   }
