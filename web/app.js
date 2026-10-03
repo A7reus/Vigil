@@ -19,14 +19,6 @@ function showError(msg) {
 }
 function clearError() { $('errorBar').hidden = true; }
 
-// Per-endpoint last outcome, always visible: tells a dead server
-// (all FAIL) apart from a sick one (mixed results) with no devtools.
-const diag = { health: '…', alerts: '…' };
-function renderDiag() {
-  const el = $('diagLine');
-  if (el) el.textContent = `health: ${diag.health} · alerts: ${diag.alerts}`;
-}
-
 async function api(path, opts) {
   const r = await fetch(path, opts);
   if (!r.ok) {
@@ -36,51 +28,17 @@ async function api(path, opts) {
   return r.json();
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-let queueLoaded = false;
-
-async function checkHealth(retries = 5) {
-  // Free-tier hosts sleep and redeploy; attempts often race the wake-up, so
-  // retry with backoff and always report the real reason. The /health link
-  // lets you tell a browser/network problem (link fails too) from a console
-  // bug (link works) without any tooling.
-  let lastErr = '';
-  for (let i = 0; i < retries; i++) {
-    try {
-      const h = await api('/health');
-      $('health').textContent =
-        `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes · queue ${h.queue_size}`;
-      $('health').className = 'health ok';
-      diag.health = `ok (${h.queue_size} queued)`;
-      renderDiag();
-      clearError();
-      if (!queueLoaded) loadQueue();  // we arrived during an outage; catch up
-      return true;
-    } catch (err) {
-      lastErr = err.message;
-      diag.health = `FAIL (${err.message})`;
-      renderDiag();
-      $('health').textContent = `contacting API (try ${i + 1}/${retries})…`;
-      $('health').className = 'health bad';
-      await sleep(3000 * (i + 1));
-    }
+async function checkHealth() {
+  try {
+    const h = await api('/health');
+    $('health').textContent =
+      `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes · queue ${h.queue_size}`;
+    $('health').className = 'health ok';
+  } catch (err) {
+    $('health').textContent = 'API offline. Start with: uvicorn api.main:app --port 8000';
+    $('health').className = 'health bad';
   }
-  $('health').innerHTML =
-    `API offline (${esc(lastErr)}), re-checking every 30s. Self-hosting? start: ` +
-    `<code>uvicorn api.main:app --port 8000</code>. Hosted demo? open ` +
-    `<a href="/health" target="_blank" rel="noopener">/health</a> directly: ` +
-    `if it fails too, the network or host is down; if it works, hard-refresh this page.`;
-  $('health').className = 'health bad';
-  // Keep polling while offline so a load during a restart heals itself
-  // instead of freezing on a stale message. Skipped in hidden tabs.
-  setTimeout(() => { if (!document.hidden) checkHealth(2); }, 30000);
-  return false;
 }
-
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) checkHealth(1);
-});
 
 function badge(level) {
   return `<span class="badge ${esc(level)}">${esc(level)}</span>`;
@@ -94,12 +52,8 @@ async function loadQueue() {
     const q = level ? `?limit=200&level=${level}` : '?limit=200';
     const data = await api(`/alerts${q}`);
     queue = data.alerts || [];
-    diag.alerts = `ok (${queue.length})`;
-    renderDiag();
     renderQueue();
   } catch (err) {
-    diag.alerts = `FAIL (${err.message})`;
-    renderDiag();
     $('queueBody').innerHTML = '<tr><td colspan="6" class="muted">queue failed to load</td></tr>';
     showError(`Queue failed: ${err.message}`);
   }
@@ -123,7 +77,6 @@ function renderQueue() {
     $('queueBody').innerHTML = '<tr><td colspan="6" class="muted">no alerts match filters</td></tr>';
     return;
   }
-  queueLoaded = true;
   $('queueBody').innerHTML = rows.map((r) => `
     <tr data-id="${esc(r.txn_id)}" class="${r.txn_id === selectedId ? 'sel' : ''}">
       <td><strong>${Number(r.risk_score).toFixed(2)}</strong>${decided[r.txn_id] ? ` <span class="muted">(${esc(decided[r.txn_id])})</span>` : ''}</td>
@@ -191,7 +144,7 @@ async function sendDecision(decision) {
   }
 }
 
-$('refreshBtn').addEventListener('click', () => { checkHealth(); loadQueue(); });
+$('refreshBtn').addEventListener('click', loadQueue);
 $('levelFilter').addEventListener('change', loadQueue);
 $('sortSelect').addEventListener('change', renderQueue);
 $('minRisk').addEventListener('input', renderQueue);
