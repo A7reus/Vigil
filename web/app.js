@@ -28,16 +28,28 @@ async function api(path, opts) {
   return r.json();
 }
 
-async function checkHealth() {
-  try {
-    const h = await api('/health');
-    $('health').textContent =
-      `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes · queue ${h.queue_size}`;
-    $('health').className = 'health ok';
-  } catch (err) {
-    $('health').textContent = 'API offline — start with: uvicorn api.main:app --port 8000';
-    $('health').className = 'health bad';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function checkHealth(retries = 3) {
+  // Free-tier hosts sleep and redeploy; the first attempt often races the
+  // wake-up, so retry with backoff and always report the real reason.
+  for (let i = 0; i < retries; i++) {
+    try {
+      const h = await api('/health');
+      $('health').textContent =
+        `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes · queue ${h.queue_size}`;
+      $('health').className = 'health ok';
+      return;
+    } catch (err) {
+      $('health').textContent = `API unreachable (${err.message}) — retrying…`;
+      $('health').className = 'health bad';
+      await sleep(3000 * (i + 1));
+    }
   }
+  $('health').textContent =
+    'API offline — if self-hosting, start with: uvicorn api.main:app --port 8000. ' +
+    'On hosted demo, hard-refresh (the service may be waking from sleep).';
+  $('health').className = 'health bad';
 }
 
 function badge(level) {
@@ -144,7 +156,7 @@ async function sendDecision(decision) {
   }
 }
 
-$('refreshBtn').addEventListener('click', loadQueue);
+$('refreshBtn').addEventListener('click', () => { checkHealth(); loadQueue(); });
 $('levelFilter').addEventListener('change', loadQueue);
 $('sortSelect').addEventListener('change', renderQueue);
 $('minRisk').addEventListener('input', renderQueue);
