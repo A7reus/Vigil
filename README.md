@@ -60,7 +60,7 @@ python -m scripts.run_demo              # 4k-txn end-to-end: generate → train 
 ```
 
 ## Live deployment URL
-`TBD: deploy API to Render/Railway and put URL here before T+72h` (judges require a live link; local fallback: follow Run commands + video).
+`https://vigil-qna5.onrender.com/` (API plus analyst console at `/`; interactive docs at `/docs`). Free-tier hosting sleeps when idle, so the first visit after a pause takes about a minute to wake. Local fallback: follow Run commands + video.
 
 ## Testing instructions
 ```bash
