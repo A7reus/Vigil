@@ -60,7 +60,7 @@ python -m scripts.run_demo              # 4k-txn end-to-end: generate → train 
 
 ## Testing instructions
 ```bash
-pytest -q                                   # smoke + API + security regression (needs data/ + artifacts/)
+pytest -q                                   # 43 tests: smoke + API + security + LLM (mocked) + intensive units (needs data/ + artifacts/)
 python -m eval.evaluate --sample 20000      # offline metrics + fairness + business sim
 # API verify: /health -> {"ok": true}; /score latency_ms should be <200 p95 locally
 # Frontend verify: GET / -> 200 text/html; queue + case + playground in browser
