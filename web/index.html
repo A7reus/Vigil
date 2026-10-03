@@ -1,138 +1,241 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#232730" />
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#eceff4" />
   <meta name="description" content="Vigil analyst console: risk queue, case investigation, scoring playground." />
+  <meta name="color-scheme" content="dark light" />
   <title>Vigil — Analyst Console</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="styles.css" />
+  <script>
+    /* Set theme before first paint to avoid a flash. */
+    (function () {
+      try {
+        var t = localStorage.getItem('vigil_theme');
+        if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>Vigil <span class="sub">Trust &amp; Risk Intelligence</span></h1>
-      <p id="health" class="health">connecting…</p>
+  <a class="skip" href="#queueTable">Skip to queue</a>
+
+  <header class="topbar">
+    <div class="brand-block">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3l11 4v8c0 7-4.6 12.2-11 14C9.6 27.200 5 22 5 15V7z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><circle cx="16" cy="15" r="3.2" fill="currentColor"/></svg>
+        <div>
+          <h1>Vigil</h1>
+          <p class="tagline">Trust &amp; Risk Intelligence</p>
+        </div>
+      </div>
+
+      <p id="health" class="health" role="status" aria-live="polite"><span class="dot"></span><span id="healthText">connecting…</span></p>
     </div>
-    <div class="controls">
-      <label>Queue
-        <select id="levelFilter">
-          <option value="">All levels</option>
-          <option value="High">High only</option>
-          <option value="Medium">Medium only</option>
-          <option value="Low">Low only</option>
-        </select>
+
+    <div class="actions">
+      <div class="seg" role="group" aria-label="Case language">
+        <button type="button" class="seg-btn" data-lang="en" aria-pressed="true" data-tip="Case text in English">EN</button>
+        <button type="button" class="seg-btn" data-lang="bn" aria-pressed="false" data-tip="Case text in Bangla">বাং</button>
+      </div>
+      <label class="switch" data-tip="Reload the queue every 30 seconds">
+        <input type="checkbox" id="autoRefresh" />
+        <span class="track" aria-hidden="true"></span>
+        <span>Auto</span>
       </label>
-      <label>Lang
-        <select id="langSelect">
-          <option value="en">EN</option>
-          <option value="bn">BN</option>
-        </select>
-      </label>
-      <button id="refreshBtn">Refresh queue</button>
+      <button type="button" id="refreshBtn" class="btn" data-tip="Reload alerts (R)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.400-5.700M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="lbl">Refresh</span>
+      </button>
+      <button type="button" id="openScore" class="btn primary" data-tip="Score a transfer on demand (T)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round"/></svg>
+        <span class="lbl">Test transaction</span>
+      </button>
+      <button type="button" id="themeBtn" class="icon-btn" aria-label="Toggle light and dark theme" data-tip="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.500A8 8 0 0 1 9.500 4 8 8 0 1 0 20 14.500z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+      <button type="button" id="tourBtn" class="icon-btn" aria-label="Take the guided tour" data-tip="Guided tour (?)">?</button>
     </div>
   </header>
 
-  <div id="errorBar" class="errorbar" hidden></div>
+  <section id="kpis" class="kpis" aria-label="Queue summary">
+    <div class="kpi"><span class="kpi-label">In queue</span><strong id="kTotal">–</strong><span class="kpi-sub" id="kTotalSub">&nbsp;</span>
+      <div class="dist" id="kDist" aria-hidden="true"><i class="h"></i><i class="m"></i><i class="l"></i></div></div>
+    <div class="kpi high"><span class="kpi-label">High risk</span><strong id="kHigh">–</strong><span class="kpi-sub">hold + step-up</span></div>
+    <div class="kpi med"><span class="kpi-label">Medium risk</span><strong id="kMed">–</strong><span class="kpi-sub">needs review</span></div>
+    <div class="kpi"><span class="kpi-label">Exposure (High + Medium)</span><strong id="kExposure">–</strong><span class="kpi-sub">total amount flagged</span></div>
+    <div class="kpi">
+      <span class="kpi-label">Reviewed this session</span><strong id="kDone">0</strong>
+      <div class="progress" aria-hidden="true"><div id="kDoneBar"></div></div>
+    </div>
+  </section>
 
-  <main>
-    <section id="walkthrough" class="walk" hidden>
-      <div>
-        <strong>New here? Three steps, two minutes:</strong>
-        <ol>
-          <li><b>Browse the queue</b> on the left — riskiest first. Click any row.</li>
-          <li><b>Read the case</b> — narrative, reasons, mule-ring panel, timeline. Try EN/BN.</li>
-          <li><b>Try the playground</b> below — fill an example, score it, log a decision.</li>
-        </ol>
+  <main class="workspace">
+    <section class="queue-pane" aria-labelledby="queueTitle">
+      <div class="pane-head">
+        <h2 id="queueTitle">Analyst queue <small id="queueCount"></small></h2>
+        <p class="hint-keys"><kbd>J</kbd><kbd>K</kbd> move · <kbd>Enter</kbd> open · <kbd>/</kbd> search</p>
       </div>
-      <button id="walkDismiss">Got it</button>
-    </section>
-    <section class="queue">
-      <h2>Analyst queue <small id="queueCount"></small></h2>
-      <div class="queue-tools">
-        <input id="searchBox" placeholder="filter by txn / sender / receiver…" />
-        <label>Sort
-          <select id="sortSelect">
-            <option value="risk">Risk ↓</option>
-            <option value="amount">Amount ↓</option>
-          </select>
-        </label>
-        <label>Min risk <span id="minRiskVal">0.00</span>
-          <input id="minRisk" type="range" min="0" max="1" step="0.05" value="0" />
-        </label>
+
+      <div id="queueTools" class="queue-tools">
+        <div class="chips" role="group" aria-label="Filter by risk level">
+          <button type="button" class="chip" data-level="" aria-pressed="true">All <span class="n" id="cAll">0</span></button>
+          <button type="button" class="chip High" data-level="High" aria-pressed="false">High <span class="n" id="cHigh">0</span></button>
+          <button type="button" class="chip Medium" data-level="Medium" aria-pressed="false">Medium <span class="n" id="cMed">0</span></button>
+          <button type="button" class="chip Low" data-level="Low" aria-pressed="false">Low <span class="n" id="cLow">0</span></button>
+        </div>
+        <div class="tools-row">
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.500" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <input id="searchBox" type="search" placeholder="Search txn or wallet" aria-label="Filter queue by transaction, sender, or receiver" autocomplete="off" autocapitalize="off" spellcheck="false" />
+          </label>
+          <label class="field-inline">Sort
+            <select id="sortSelect">
+              <option value="risk">Risk ↓</option>
+              <option value="amount">Amount ↓</option>
+            </select>
+          </label>
+          <label class="field-inline range">Min risk <output id="minRiskVal">0.00</output>
+            <input id="minRisk" type="range" min="0" max="1" step="0.05" value="0" aria-label="Minimum risk score" />
+          </label>
+          <label class="check-inline"><input type="checkbox" id="hideDone" /> Hide reviewed</label>
+        </div>
       </div>
+
       <div class="table-wrap">
-        <table>
+        <table id="queueTable" aria-describedby="queueCount">
           <thead>
-            <tr><th>Risk</th><th>Txn</th><th>Route</th><th>Amount</th><th>Level</th><th>Action</th></tr>
+            <tr>
+              <th scope="col">Risk</th>
+              <th scope="col">Transaction</th>
+              <th scope="col" class="num">Amount</th>
+              <th scope="col">Level</th>
+              <th scope="col" class="col-action">Suggested action</th>
+            </tr>
           </thead>
-          <tbody id="queueBody"><tr><td colspan="6" class="muted">loading queue…</td></tr></tbody>
+          <tbody id="queueBody"></tbody>
         </table>
       </div>
     </section>
 
-    <section class="detail">
-      <h2>Case detail</h2>
-      <div id="caseEmpty" class="empty">Select a row to see What happened / Why risky / What next.</div>
-      <div id="caseBox" hidden>
-        <div class="case-head">
-          <div><strong id="caseId"></strong><div id="caseMeta" class="muted"></div></div>
-          <span id="caseLevel" class="badge"></span>
-        </div>
-        <h3>Investigator narrative</h3>
-        <pre id="caseNarrative"></pre>
-        <h3>Top reasons</h3>
-        <ul id="caseReasons"></ul>
-        <h3>Components</h3>
-        <div id="caseComponents" class="grid"></div>
-        <h3>Mule-ring proximity (2-hop fraud neighbors)</h3>
-        <div id="caseGraph" class="muted">—</div>
-        <h3>Wallet timeline (last 10 sends + receives)</h3>
-        <ul id="caseTimeline" class="timeline"></ul>
-        <div class="decisions">
-          <button data-dec="allow">Allow</button>
-          <button data-dec="step-up">Step-up</button>
-          <button data-dec="freeze">Freeze + review</button>
-          <span id="decStatus" class="muted"></span>
+    <aside id="casePane" class="case-pane" aria-label="Case detail">
+      <div class="pane-head case-head">
+        <button type="button" id="caseClose" class="icon-btn only-narrow" aria-label="Back to queue">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <h2>Case detail</h2>
+        <div class="case-nav" id="caseNav" hidden>
+          <button type="button" id="casePrev" class="icon-btn" aria-label="Previous case" data-tip="Previous (K)">↑</button>
+          <button type="button" id="caseNext" class="icon-btn" aria-label="Next case" data-tip="Next (J)">↓</button>
         </div>
       </div>
 
-      <h2>Score playground</h2>
-      <p class="muted">Describe one transfer as the API sees it, then score it. Unknown IDs are fine.</p>
-      <div class="examples">
-        <button id="fillScam" type="button">Fill scam example</button>
-        <button id="fillNormal" type="button">Fill normal example</button>
-      </div>
-      <form id="scoreForm">
-        <div class="form-grid">
-          <label>Sender wallet ID <span class="hint">who sends; the customer being scored</span>
-            <input name="sender_id" value="C000001" required placeholder="e.g. C000001" /></label>
-          <label>Receiver wallet ID <span class="hint">who gets the money</span>
-            <input name="receiver_id" value="C000002" required placeholder="e.g. C000002" /></label>
-          <label>Amount in BDT <span class="hint">large vs the sender's average looks risky</span>
-            <input name="amount" type="number" step="0.01" min="1" value="45000" required placeholder="e.g. 45000" /></label>
-          <label>Channel <span class="hint">how the money moves</span>
-            <select name="channel"><option>app</option><option>ussd</option><option>agent</option></select></label>
-          <label>Device ID <span class="hint">a never-seen ID looks suspicious</span>
-            <input name="device_id" value="DX999" placeholder="e.g. DX999" /></label>
-          <label>Location <span class="hint">district; jumps from home look risky</span>
-            <input name="location" value="Dhaka" placeholder="e.g. Dhaka" /></label>
-          <label>Timestamp <span class="hint">ISO date-time; nights look risky</span>
-            <input name="timestamp" value="2026-08-15T23:10:00" required placeholder="e.g. 2026-08-15T23:10:00" /></label>
-          <label>Type <span class="hint">kind of transfer</span>
-            <select name="type"><option>P2P</option><option>merchant</option><option>bill</option><option>cash-out</option></select></label>
-          <label class="check"><input type="checkbox" name="pwd_reset" value="1" /> password was reset just before (account-takeover signal)</label>
+      <div id="caseScroll" class="case-scroll">
+        <div id="caseEmpty" class="empty-state">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 5l16 6v11c0 10-6.800 17.500-16 20-9.200-2.500-16-10-16-20V11z" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linejoin="round"/><path d="M17 24l5 5 9-10" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <h3>Pick a case to investigate</h3>
+          <p>Select a row in the queue to see what happened, why it was flagged, and what to do next.</p>
+          <p class="hint-keys"><kbd>A</kbd> allow · <kbd>S</kbd> step-up · <kbd>F</kbd> freeze</p>
         </div>
-        <button type="submit">Score transaction</button>
-      </form>
-      <pre id="scoreOut" class="empty">POST /score result appears here.</pre>
-    </section>
+        <div id="caseBody" hidden></div>
+      </div>
+
+      <div id="decisionBar" class="decision-bar" hidden>
+        <div class="decision-btns">
+          <button type="button" class="btn dec allow" data-dec="allow" data-tip="Release the transfer (A)">Allow</button>
+          <button type="button" class="btn dec stepup" data-dec="step-up" data-tip="Ask the sender to verify (S)">Step-up</button>
+          <button type="button" class="btn dec freeze" data-dec="freeze" data-tip="Hold funds for review (F)">Freeze + review</button>
+        </div>
+        <div class="decision-meta">
+          <span id="decStatus" class="muted" role="status" aria-live="polite"></span>
+          <label class="check-inline"><input type="checkbox" id="autoAdvance" checked /> Next case after decision</label>
+        </div>
+      </div>
+    </aside>
   </main>
 
   <footer>
     <small>Vigil API: <code>GET /health · GET /alerts · GET /case/{id} · POST /score · POST /decision</code>
-    · Never auto-blocks money — high impact stays human-reviewed.</small>
+    · Never auto-blocks money — high-impact actions stay human-reviewed.</small>
   </footer>
+
+  <!-- Test a transaction -->
+  <dialog id="scoreDialog" class="dialog" aria-labelledby="scoreTitle">
+    <div class="dialog-head">
+      <div>
+        <h2 id="scoreTitle">Test a transaction</h2>
+        <p class="muted small">Score any transfer on demand. Start from a preset or type your own values.</p>
+      </div>
+      <button type="button" id="scoreClose" class="icon-btn" aria-label="Close dialog">✕</button>
+    </div>
+    <div class="dialog-body">
+      <form id="scoreForm" novalidate>
+        <div class="presets">
+          <span class="muted small">Presets</span>
+          <button type="button" class="chip" data-preset="suspicious">Suspicious late-night</button>
+          <button type="button" class="chip" data-preset="typical">Typical payment</button>
+        </div>
+        <div class="form-grid">
+          <label class="field">Sender wallet
+            <input name="sender_id" value="C000001" required placeholder="e.g. C000001" autocomplete="off" />
+          </label>
+          <label class="field">Receiver wallet
+            <input name="receiver_id" value="C000002" required placeholder="e.g. C000002" autocomplete="off" />
+          </label>
+          <label class="field">Amount (BDT)
+            <input name="amount" type="number" step="0.01" min="1" value="45000" required inputmode="decimal" />
+          </label>
+          <label class="field">Transfer type
+            <select name="type"><option value="P2P">Person to person</option><option value="merchant">Merchant payment</option><option value="bill">Bill payment</option><option value="cash-out">Cash-out</option></select>
+          </label>
+          <label class="field">Channel
+            <select name="channel"><option value="app">App</option><option value="ussd">USSD</option><option value="agent">Agent</option></select>
+          </label>
+          <label class="field">Location
+            <input name="location" value="Dhaka" placeholder="e.g. Dhaka" />
+          </label>
+          <label class="field">Sender device
+            <input name="device_id" value="DX999" placeholder="e.g. DX999 (unknown device)" autocomplete="off" />
+          </label>
+          <label class="field">Time
+            <input name="timestamp" type="datetime-local" step="1" value="2026-08-15T23:10:00" required />
+          </label>
+          <label class="check field-wide"><input type="checkbox" name="pwd_reset" value="1" /> Password reset just before this transfer <span class="muted">(account-takeover signal)</span></label>
+        </div>
+        <p id="formError" class="form-error" hidden role="alert"></p>
+        <div class="form-actions">
+          <button type="button" id="scoreCancel" class="btn">Close</button>
+          <button type="submit" id="scoreSubmit" class="btn primary">Score transaction</button>
+        </div>
+      </form>
+
+      <div class="score-result" id="scoreResult" aria-live="polite">
+        <div id="scoreEmpty" class="empty-state compact">
+          <p>The score, reasons, and investigator note appear here.</p>
+        </div>
+        <div id="scoreOutBox" hidden></div>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <div id="tourOverlay" class="tour-overlay" hidden></div>
+  <div id="tourCard" class="tour-card" role="dialog" aria-modal="true" aria-labelledby="tourTitle" hidden>
+    <p id="tourStep" class="tour-step"></p>
+    <h2 id="tourTitle"></h2>
+    <p id="tourBody"></p>
+    <div class="tour-dots" id="tourDots" aria-hidden="true"></div>
+    <div class="tour-actions">
+      <button type="button" id="tourSkip" class="btn quiet">Skip tour</button>
+      <button type="button" id="tourNext" class="btn primary">Next</button>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>
