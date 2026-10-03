@@ -1,0 +1,16 @@
+# Render blueprint: New → Blueprint → connect repo, or paste this in manual setup.
+# Python version comes from `.python-version` (Render default is 3.14.x).
+services:
+  - type: web
+    name: vigil
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && python -m data_gen.generate --n-customers 2000 --n-txns 20000 --out data && python -m models.train --data data --artifacts artifacts
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: VIGIL_ALERTS_LIMIT
+        value: 100
+      - key: VIGIL_RATE_LIMIT_PER_MIN
+        value: 120
+      - key: LLM_API_KEY
+        sync: false
