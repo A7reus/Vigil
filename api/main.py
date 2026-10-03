@@ -165,10 +165,45 @@ def metrics():
             "startup": startup_info}
 
 
+# Exact score-time state for LIVE txns (feats + graph facts), so /case/{live_id}
+# resolves without recomputing. Capped; evicts oldest first.
+live_cases: dict[str, dict] = {}
+MAX_LIVE_CASES = 500
+
+# Per-IP token buckets for write endpoints (demo-grade flood protection; the
+# scoring state itself is already isolated from LIVE traffic in store.py).
+_rate_hits: dict[str, list[float]] = {}
+
+
+def _rate_limit_ok(ip: str) -> bool:
+    try:
+        limit = int(os.getenv("VIGIL_RATE_LIMIT_PER_MIN", "120"))
+    except ValueError:
+        limit = 120
+    if limit <= 0:
+        return True
+    now = time.monotonic()
+    hits = [t for t in _rate_hits.get(ip, []) if now - t < 60.0]
+    if len(hits) >= limit:
+        _rate_hits[ip] = hits
+        return False
+    _rate_hits[ip] = hits + [now]
+    return True
+
+
+def _known_txn_ids() -> set:
+    ids = {r["txn_id"] for r in alert_cache} | set(live_cases)
+    if store is not None and len(store.txns):
+        ids |= set(store.txns["txn_id"].tolist())
+    return ids
+
+
 @app.post("/score")
-def score(req: ScoreRequest):
+def score(req: ScoreRequest, request: Request):
     global request_count
     assert store is not None and graph is not None
+    if not _rate_limit_ok(request.client.host if request.client else "unknown"):
+        raise HTTPException(429, "rate limit exceeded, retry in a minute")
     t0 = time.perf_counter()
     txn = req.model_dump()
     feats = store.featurize(txn)
@@ -180,10 +215,16 @@ def score(req: ScoreRequest):
     d = decide(s["risk_score"])
     nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
     txn_id = f"LIVE-{uuid4().hex[:8]}"
-    store.append({"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
-                  "amount": txn["amount"], "type": txn.get("type", "P2P"), "timestamp": txn["timestamp"],
-                  "device_id": txn["device_id"], "location": txn["location"], "channel": txn["channel"],
-                  "is_fraud": 0, "fraud_type": "none", "password_reset_flag": 0})
+    # Scoring-neutral: visible in timelines only, never moves anyone's features.
+    store.append_live({"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
+                       "amount": txn["amount"], "type": txn.get("type", "P2P"), "timestamp": txn["timestamp"],
+                       "device_id": txn["device_id"], "location": txn["location"], "channel": txn["channel"]})
+    live_cases[txn_id] = {"txn": txn, "feats": feats, "score": s, "decision": d,
+                          "graph": {"boost": gf["boost"],
+                                    "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
+                                    "fraud_neighbor_sample": gf.get("fraud_neighbor_sample", [])}}
+    while len(live_cases) > MAX_LIVE_CASES:
+        live_cases.pop(next(iter(live_cases)))
     latency_ms = (time.perf_counter() - t0) * 1000
     request_count += 1
     log.info("score %s -> %.3f %s (%.1fms)", txn_id, s["risk_score"], d["risk_level"], latency_ms)
@@ -197,54 +238,76 @@ def score(req: ScoreRequest):
 
 
 @app.get("/alerts")
-def alerts(limit: int = Query(100, le=500), level: str | None = None):
+def alerts(limit: int = Query(100, ge=1, le=500), level: str | None = None):
     rows = alert_cache[:limit] if alert_cache else []
     if level:
         rows = [r for r in rows if r["risk_level"].lower() == level.lower()]
-    # Strip internal feature cache from the list view; /case returns full detail.
-    public = [{k: v for k, v in r.items() if k not in ("feats", "graph_boost_raw")} for r in rows[:limit]]
+    # Public view: no internals (feats), no ground-truth labels.
+    public = [{k: v for k, v in r.items() if k not in ("feats", "graph_boost_raw", "label")}
+              for r in rows[:limit]]
     return {"alerts": public, "count": len(public)}
 
 
 @app.get("/case/{txn_id}")
 def case(txn_id: str, lang: str = "en"):
-    rows = [r for r in alert_cache if r["txn_id"] == txn_id]
-    if not rows:
-        raise HTTPException(404, "case not found in pre-scored queue; POST /score first")
     assert store is not None
-    c = rows[0]
-    txn = {"sender_id": c.get("sender_id", c.get("sender")),
-           "receiver_id": c.get("receiver_id", c.get("receiver")), "amount": c["amount"],
-           "channel": c["channel"], "device_id": c.get("device_id", "unknown"),
-           "location": c.get("location", "Dhaka"),
-           "timestamp": c.get("timestamp", "")}
-    # Reuse the exact causal features computed at queue build time.
-    # Fallback to live featurization only for caches built before this fix.
-    feats = c.get("feats")
-    if not feats:
-        feats = store.featurize({
-            "sender_id": txn["sender_id"], "receiver_id": txn["receiver_id"],
-            "amount": txn["amount"], "channel": txn["channel"],
-            "device_id": txn.get("device_id", "unknown"),
-            "location": txn.get("location", "Dhaka"),
-            "timestamp": txn["timestamp"] or "2026-08-15T12:00:00"})
-    nar = narrate(txn, feats, c, {"boost": c.get("graph_boost_raw", c.get("graph_boost", 0)),
-                                  "fraud_neighbors_2hop": c.get("fraud_neighbors_2hop", 0)}, lang=lang)
-    sent = store.txns[store.txns.sender == txn["sender_id"]].tail(6)
-    recv = store.txns[store.txns.receiver == txn["sender_id"]].tail(4)
-    timeline = pd.concat([sent, recv]).sort_values("__ts").tail(10)[
-        ["txn_id", "sender", "receiver", "amount", "timestamp", "location"]].to_dict("records")
-    public = {k: v for k, v in c.items() if k not in ("feats",)}
+    live = live_cases.get(txn_id)
+    rows = [r for r in alert_cache if r["txn_id"] == txn_id]
+    if live is None and not rows:
+        raise HTTPException(404, "case not found; score it first via POST /score or pick a queued alert")
+    if live is not None:
+        txn, feats = live["txn"], live["feats"]
+        c = {**live["score"], **live["decision"],
+             "fraud_neighbors_2hop": live["graph"]["fraud_neighbors_2hop"],
+             "fraud_neighbor_sample": live["graph"]["fraud_neighbor_sample"],
+             "txn_id": txn_id, **{k: txn.get(k) for k in
+                                  ("sender_id", "receiver_id", "amount", "channel", "device_id", "location", "timestamp")}}
+        gfacts = live["graph"]
+    else:
+        c = rows[0]
+        txn = {"sender_id": c.get("sender_id", c.get("sender")),
+               "receiver_id": c.get("receiver_id", c.get("receiver")), "amount": c["amount"],
+               "channel": c["channel"], "device_id": c.get("device_id", "unknown"),
+               "location": c.get("location", "Dhaka"),
+               "timestamp": c.get("timestamp", "")}
+        # Reuse the exact causal features computed at queue build time.
+        # Fallback to live featurization only for caches built before this fix.
+        feats = c.get("feats")
+        if not feats:
+            feats = store.featurize({
+                "sender_id": txn["sender_id"], "receiver_id": txn["receiver_id"],
+                "amount": txn["amount"], "channel": txn["channel"],
+                "device_id": txn.get("device_id", "unknown"),
+                "location": txn.get("location", "Dhaka"),
+                "timestamp": txn["timestamp"] or "2026-08-15T12:00:00"})
+        gfacts = {"boost": c.get("graph_boost_raw", c.get("graph_boost", 0)),
+                  "fraud_neighbors_2hop": c.get("fraud_neighbors_2hop", 0)}
+    nar = narrate(txn, feats, c, gfacts, lang=lang)
+    timeline = store.timeline_for(txn.get("sender_id", txn.get("sender", "")), n=10)
+    public = {k: v for k, v in c.items() if k not in ("feats", "graph_boost_raw", "label")}
     log.info("case %s viewed (lang=%s)", txn_id, lang)
     return {**public, "narrative": nar["narrative"], "timeline": timeline}
 
 
 @app.post("/decision")
-def decision(req: DecisionRequest):
+def decision(req: DecisionRequest, request: Request):
     assert store is not None
-    store.decisions.append({**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()})
-    log.info("decision %s -> %s by %s", req.txn_id, req.decision, req.analyst)
-    return {"ok": True, "logged": req.model_dump(), "pending_retrain": len(store.decisions)}
+    if not _rate_limit_ok(request.client.host if request.client else "unknown"):
+        raise HTTPException(429, "rate limit exceeded, retry in a minute")
+    if req.txn_id not in _known_txn_ids():
+        raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
+    entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()}
+    updated = False
+    for i, d in enumerate(store.decisions):
+        if d.get("txn_id") == req.txn_id and d.get("analyst") == req.analyst:
+            store.decisions[i] = entry
+            updated = True
+            break
+    if not updated:
+        store.decisions.append(entry)
+    log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, req.analyst, updated)
+    return {"ok": True, "updated": updated, "logged": req.model_dump(),
+            "pending_retrain": len(store.decisions)}
 
 
 # Analyst console (no build step): served from /web. API routes above take

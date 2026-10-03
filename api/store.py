@@ -15,6 +15,10 @@ import pandas as pd
 from features.build import ROUND_AMOUNTS
 
 MAX_HISTORY = 60_000
+# Unreviewed LIVE scores live here — never in txns/seen-sets — so unauthenticated
+# /score traffic cannot move anyone else's features (velocity, seen-device,
+# seen-location) nor evict committed history.
+MAX_LIVE = 2000
 
 
 class HistoryStore:
@@ -43,6 +47,7 @@ class HistoryStore:
             self.seen_dev[r["sender"]].add(r["device_id"])
             self.seen_loc[r["sender"]].add(r["location"])
         self.decisions: list[dict] = []
+        self.live_rows: list[dict] = []
 
     def featurize(self, txn: dict) -> dict:
         ts = datetime.fromisoformat(txn["timestamp"])
@@ -95,9 +100,26 @@ class HistoryStore:
         }
 
     def append(self, txn_row: dict):
+        """Committed history ingestion (updates scoring state)."""
         row = pd.DataFrame([txn_row])
         row["__ts"] = pd.to_datetime(row["timestamp"])
         self.txns = pd.concat([self.txns, row], ignore_index=True).tail(MAX_HISTORY)
         self.seen_recv[txn_row["sender"]].add(txn_row["receiver"])
         self.seen_dev[txn_row["sender"]].add(txn_row["device_id"])
         self.seen_loc[txn_row["sender"]].add(txn_row["location"])
+
+    def append_live(self, txn_row: dict):
+        """Unreviewed /score traffic: visible in timelines only, scoring-neutral."""
+        self.live_rows.append(txn_row)
+        if len(self.live_rows) > MAX_LIVE:
+            self.live_rows = self.live_rows[-MAX_LIVE:]
+
+    def timeline_for(self, wallet_id: str, n: int = 10) -> list[dict]:
+        """Last sends+receives from committed history merged with live rows."""
+        hist = self.txns[(self.txns.sender == wallet_id) | (self.txns.receiver == wallet_id)].tail(n)
+        rows = hist[["txn_id", "sender", "receiver", "amount", "timestamp", "location"]].to_dict("records")
+        for r in self.live_rows:
+            if r.get("sender") == wallet_id or r.get("receiver") == wallet_id:
+                rows.append({k: r.get(k) for k in ("txn_id", "sender", "receiver", "amount", "timestamp", "location")})
+        rows.sort(key=lambda r: str(r.get("timestamp", "")))
+        return rows[-n:]
