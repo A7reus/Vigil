@@ -9,15 +9,18 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ScoreRequest(BaseModel):
-    sender_id: str = Field(description="Sender wallet id")
-    receiver_id: str = Field(description="Receiver wallet id")
+    sender_id: str = Field(description="Sender wallet id", max_length=64)
+    receiver_id: str = Field(description="Receiver wallet id", max_length=64)
     amount: float = Field(gt=0, le=100_000_000, description="Amount in BDT, must be positive")
     channel: Literal["app", "ussd", "agent"] = "app"
-    device_id: str = "unknown"
-    location: str = "Dhaka"
+    device_id: str = Field(default="unknown", max_length=64)
+    location: str = Field(default="Dhaka", max_length=64)
     timestamp: str = Field(description="ISO-8601 timestamp")
     type: str = "P2P"
     lang: Literal["en", "bn"] = "en"
+    # ATO signal: was silently dropped (extra fields ignored), so it could never
+    # fire via the API. 0/1 only; featurize + reasons already handle it.
+    password_reset_flag: int = Field(default=0, ge=0, le=1)
 
     @field_validator("timestamp")
     @classmethod
@@ -64,7 +67,7 @@ class ScoreResponse(BaseModel):
 
 
 class DecisionRequest(BaseModel):
-    txn_id: str
+    txn_id: str = Field(max_length=64)
     decision: Literal["allow", "step-up", "freeze"]
-    analyst: str = "analyst-1"
-    note: str = ""
+    analyst: str = Field(default="analyst-1", max_length=64)
+    note: str = Field(default="", max_length=500)

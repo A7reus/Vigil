@@ -4,6 +4,14 @@ const decided = {};
 
 const $ = (id) => document.getElementById(id);
 
+// All server values are untrusted (wallet IDs, locations, device strings flow
+// from POST /score into timelines). Escape everything interpolated into HTML;
+// textContent assignments elsewhere are inherently safe.
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function showError(msg) {
   const bar = $('errorBar');
   bar.hidden = false;
@@ -33,7 +41,7 @@ async function checkHealth() {
 }
 
 function badge(level) {
-  return `<span class="badge ${level}">${level}</span>`;
+  return `<span class="badge ${esc(level)}">${esc(level)}</span>`;
 }
 
 async function loadQueue() {
@@ -70,13 +78,13 @@ function renderQueue() {
     return;
   }
   $('queueBody').innerHTML = rows.map((r) => `
-    <tr data-id="${r.txn_id}" class="${r.txn_id === selectedId ? 'sel' : ''}">
-      <td><strong>${r.risk_score.toFixed(2)}</strong>${decided[r.txn_id] ? ` <span class="muted">(${decided[r.txn_id]})</span>` : ''}</td>
-      <td><code>${r.txn_id}</code></td>
-      <td><code>${r.sender_id} → ${r.receiver_id}</code></td>
+    <tr data-id="${esc(r.txn_id)}" class="${r.txn_id === selectedId ? 'sel' : ''}">
+      <td><strong>${Number(r.risk_score).toFixed(2)}</strong>${decided[r.txn_id] ? ` <span class="muted">(${esc(decided[r.txn_id])})</span>` : ''}</td>
+      <td><code>${esc(r.txn_id)}</code></td>
+      <td><code>${esc(r.sender_id)} → ${esc(r.receiver_id)}</code></td>
       <td>৳${Number(r.amount).toLocaleString()}</td>
       <td>${badge(r.risk_level)}</td>
-      <td class="muted">${r.recommended_action}</td>
+      <td class="muted">${esc(r.recommended_action)}</td>
     </tr>`).join('');
   document.querySelectorAll('#queueBody tr[data-id]').forEach((tr) =>
     tr.addEventListener('click', () => openCase(tr.dataset.id)));
@@ -91,14 +99,14 @@ async function openCase(id) {
   $('caseNarrative').textContent = 'loading case…';
   try {
     const lang = $('langSelect').value;
-    const c = await api(`/case/${id}?lang=${lang}`);
+    const c = await api(`/case/${encodeURIComponent(id)}?lang=${lang}`);
     $('caseId').textContent = c.txn_id;
     $('caseMeta').textContent =
       `${c.sender_id} → ${c.receiver_id} · ৳${Number(c.amount).toLocaleString()} · ${c.channel} · ${c.timestamp}`;
-    $('caseLevel').textContent = `${c.risk_level} · ${c.risk_score.toFixed(2)}`;
+    $('caseLevel').textContent = `${c.risk_level} · ${Number(c.risk_score).toFixed(2)}`;
     $('caseLevel').className = `badge ${c.risk_level}`;
     $('caseNarrative').textContent = c.narrative || '(no narrative)';
-    $('caseReasons').innerHTML = (c.top_3_reasons || []).map((x) => `<li>${x}</li>`).join('');
+    $('caseReasons').innerHTML = (c.top_3_reasons || []).map((x) => `<li>${esc(x)}</li>`).join('');
     const comp = c.components || { p_fraud: c.p_fraud, anomaly: c.anomaly, graph_boost: c.graph_boost };
     $('caseComponents').innerHTML = Object.entries({
       'P(fraud)': comp.p_fraud ?? c.p_fraud,
@@ -106,14 +114,14 @@ async function openCase(id) {
       graph_boost: comp.graph_boost ?? c.graph_boost,
       fraud_neighbors_2hop: c.fraud_neighbors_2hop,
       latency_ms: comp.latency_ms,
-    }).filter(([, v]) => v !== undefined).map(([k, v]) => `<div><b>${k}</b><span>${v}</span></div>`).join('');
+    }).filter(([, v]) => v !== undefined).map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('');
     const sample = c.fraud_neighbor_sample || [];
     $('caseGraph').innerHTML = c.fraud_neighbors_2hop
-      ? `<code>${c.receiver_id}</code> ↔ <span class="muted">${c.fraud_neighbors_2hop} fraud within 2 hops</span><br/>` +
-        (sample.length ? sample.map((n) => `<code>${n}</code>`).join(' · ') : '<span class="muted">no sample</span>')
+      ? `<code>${esc(c.receiver_id)}</code> ↔ <span class="muted">${esc(c.fraud_neighbors_2hop)} fraud within 2 hops</span><br/>` +
+        (sample.length ? sample.map((n) => `<code>${esc(n)}</code>`).join(' · ') : '<span class="muted">no sample</span>')
       : '<span class="muted">no fraud proximity — receiver is clean in the 2-hop graph</span>';
     $('caseTimeline').innerHTML = (c.timeline || []).map((t) =>
-      `<li><code>${t.sender} → ${t.receiver}</code> ৳${Number(t.amount).toLocaleString()} <span class="muted">${t.timestamp} · ${t.location}</span></li>`).join('') || '<li class="muted">no history</li>';
+      `<li><code>${esc(t.sender)} → ${esc(t.receiver)}</code> ৳${Number(t.amount).toLocaleString()} <span class="muted">${esc(t.timestamp)} · ${esc(t.location)}</span></li>`).join('') || '<li class="muted">no history</li>';
     $('decStatus').textContent = decided[id] ? `logged: ${decided[id]}` : '';
   } catch (err) {
     $('caseNarrative').textContent = 'case failed to load';
@@ -154,6 +162,7 @@ $('scoreForm').addEventListener('submit', async (e) => {
     amount: Number(fd.get('amount')), channel: fd.get('channel'),
     device_id: fd.get('device_id'), location: fd.get('location'),
     timestamp: fd.get('timestamp'), type: fd.get('type'), lang: $('langSelect').value,
+    password_reset_flag: fd.get('pwd_reset') ? 1 : 0,
   };
   $('scoreOut').textContent = 'scoring…';
   try {
