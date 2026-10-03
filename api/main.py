@@ -322,8 +322,19 @@ def decision(req: DecisionRequest, request: Request):
 try:
     from fastapi.staticfiles import StaticFiles
 
+    class _NoCacheStatic(StaticFiles):
+        """Same-origin console redeploys often; with no cache headers browsers
+        keep old HTML alongside old JS, which yields dead buttons and stuck
+        queues. The files are tiny, so skip the cache entirely."""
+
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            if resp.status_code == 200:
+                resp.headers["Cache-Control"] = "no-store, must-revalidate"
+            return resp
+
     _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
     if _WEB_DIR.exists():
-        app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="web")
+        app.mount("/", _NoCacheStatic(directory=str(_WEB_DIR), html=True), name="web")
 except Exception:
     pass
