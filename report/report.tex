@@ -2,10 +2,16 @@
 \usepackage[margin=1in]{geometry}
 \usepackage{hyperref}
 \usepackage{setspace}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning}
 \setstretch{1.15}
 \setlength{\parskip}{0.6em}
+\tikzstyle{box} = [rectangle, rounded corners, draw, text width=1.7cm, minimum height=0.8cm, text centered, font=\footnotesize]
+\tikzstyle{wide} = [rectangle, rounded corners, draw, text width=2.2cm, minimum height=0.8cm, text centered, font=\footnotesize]
 \title{Vigil: Trust and Risk Intelligence for Mobile Money\\{\large AI Dev Fest 2026 AI Hackathon, Track 01}}
-\author{Team Vigil\\Daffodil International University}
+\author{Team JU\_MergeConflict\\Daffodil International University}
 \date{October 2026}
 \begin{document}
 \maketitle
@@ -17,82 +23,165 @@ money for millions of people, and one scam call or one hijacked account can
 wipe out a user's savings along with their faith in digital payments. Fraud
 analysts fight this daily, but they drown in alerts. A typical system shows a
 bare risk score with no explanation, so every serious case costs a long manual
-investigation: pulling timelines, checking devices and locations, and hunting
-for connected wallets. Slow reviews mean stolen money keeps moving, analysts
-burn out, and users leave the platform. Our project tackles exactly this gap
-for upay: fast scoring is not enough, analysts need to understand each case
-and act on it with confidence.
+investigation. Slow reviews mean stolen money keeps moving, analysts burn out,
+and users leave the platform.
 
 \section{Proposed idea}
 
-We proposed Vigil, an AI investigation console that answers the three
-questions every fraud case raises. What happened? Why is it risky? What should
-upay do next? Instead of another dashboard of unexplained scores, Vigil scores
-each transfer, explains the score in plain auditable reasons, maps it to a
-clear action, and writes the whole case up as a short narrative in English or
-Bangla. High risk never blocks money on its own. It holds the transaction,
-asks for step up authentication, and puts a human analyst in charge.
+Vigil is an AI investigation console that answers the three questions every
+fraud case raises:
+\begin{enumerate}[nosep]
+  \item What happened?
+  \item Why is it risky?
+  \item What should upay do next?
+\end{enumerate}
+Each transfer is scored, the score is explained in plain auditable reasons and
+mapped to a clear action, and the whole case is written up as a short
+narrative in English or Bangla. High risk never blocks money on its own. It
+holds the transaction, asks for step up authentication, and puts a human
+analyst in charge.
 
 \section{Implemented solution}
 
-The solution has three parts that work as one loop. First, a real time scoring
-API built with FastAPI. A transfer arrives as sender, receiver, amount,
-device, location, and timestamp, and the API returns a risk score between 0
-and 1, a level of Low, Medium, or High, the top three reasons, a recommended
-action, and a written narrative. Second, an analyst console, a static web
-page with no build step, showing a risk sorted queue with level filters and
-search, a case detail view with the narrative, reasons, component scores, a
-mule ring panel, and a wallet timeline, plus a scoring playground and decision
-buttons that log Allow, Step up, or Freeze for future retraining. Third, an
-offline evaluation harness that measures the system on held out data and
-reports ranking quality, fairness across districts and account ages, latency,
-and business impact. All development used synthetic data we generated
-ourselves plus public data, following privacy by design. No production
-customer data was needed or used.
+Figure~\ref{fig:arch} shows the full loop, which runs as three parts.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=0.35cm and 0.35cm, scale=0.85, transform shape]
+  \node[wide] (data) {Data: own simulator + PaySim};
+  \node[wide, right=of data] (feat) {26 causal features};
+  \node[box, right=of feat] (xgb) {XGBoost};
+  \node[box, below=of xgb] (iso) {Isolation Forest};
+  \node[box, below=of iso] (gr) {Graph 2-hop};
+  \node[wide, right=of xgb] (ens) {Ensemble 0.7 / 0.2 / 0.1};
+  \node[wide, right=of ens] (narr) {Rules + LLM narrative};
+  \node[wide, right=of narr] (act) {Analyst decision};
+  \draw[->] (data) -- (feat);
+  \draw[->] (feat) -- (xgb);
+  \draw[->] (feat) -- (iso);
+  \draw[->] (feat) -- (gr);
+  \draw[->] (xgb) -- (ens);
+  \draw[->] (iso) -- (ens);
+  \draw[->] (gr) -- (ens);
+  \draw[->] (ens) -- (narr);
+  \draw[->] (narr) -- (act);
+  \draw[->] (act) |- ([yshift=-1.6cm]narr) -| (data);
+\end{tikzpicture}
+\caption{Vigil pipeline, from data to analyst action with a retraining loop.}
+\label{fig:arch}
+\end{figure}
+
+\begin{description}[nosep]
+  \item[Scoring API (FastAPI).] A transfer arrives as sender, receiver,
+    amount, device, location, and timestamp. The API returns a risk score
+    between 0 and 1, a level of Low, Medium, or High, the top three reasons,
+    a recommended action, and a written narrative, in about 25 milliseconds.
+  \item[Analyst console (static web page).] A risk sorted queue with level
+    filters and search, a case view with narrative, reasons, component
+    scores, a mule ring panel, and a wallet timeline, plus a scoring
+    playground and decision buttons that log Allow, Step up, or Freeze for
+    future retraining.
+  \item[Evaluation harness.] Measures the system on held out data and reports
+    ranking quality, fairness across districts and account ages, latency, and
+    business impact.
+\end{description}
+All development used synthetic data we generated ourselves plus public data,
+following privacy by design. No production customer data was needed or used.
 
 \section{Key features}
 
-Vigil scores transfers in about 25 milliseconds at the 95th percentile.
-Every score carries human readable reasons, with per transaction SHAP values
-backing them up. The console supports English and Bangla narratives, with a
-deterministic offline fallback so the demo works without internet. The
-transaction graph panel exposes mule rings by listing fraud wallets within
-two hops of a receiver. Analyst decisions feed a retraining log, and
-thresholds live in a config file so new on site requirements can be integrated
-without touching the models. Inputs are strictly validated, unauthenticated
-scoring traffic is isolated so it can never poison anyone's features, and the
-test suite covers scoring, validation, security regressions, and the language
-model path.
+\begin{itemize}[nosep]
+  \item Real time scoring with auditable top three reasons, backed by per
+    transaction SHAP values.
+  \item English and Bangla narratives with a deterministic offline fallback,
+    so the demo works without internet.
+  \item Mule ring discovery through the transaction graph, with fraud wallets
+    near a receiver listed in each case.
+  \item Strict input validation, isolated scoring traffic that cannot poison
+    anyone's features, and a 47 test suite covering scoring, validation,
+    security regressions, and the language model path.
+  \item Thresholds in a config file, so new requirements integrate without
+    retraining the models.
+\end{itemize}
 
 \section{AI approach}
 
-Our data strategy mixes our own hardened simulator, with scam, takeover,
-mule, and agent patterns plus realistic noise, and PaySim, a public mobile
-money dataset calibrated on real logs, used only for independent validation.
-The model layer combines four techniques. An XGBoost classifier learns fraud
-shapes from tens of thousands of labeled examples. An IsolationForest learns
-what normal looks like from legitimate traffic alone and flags the rest, with
-scores calibrated to percentiles from training data. A NetworkX graph adds
-suspicion for receivers sitting near known fraud wallets. A weighted ensemble
-of 0.7, 0.2, and 0.1 blends the three into one score. A grounded language
-model then narrates each case from the computed facts only, under a fixed
-template, with sanitized inputs. On our test data the system reaches 0.998
-AUC against 0.81 for hand written rules, and on PaySim it holds 0.90 while
-the rules collapse to a coin flip, using the same code with no tuning. We
-deliberately refused leakage features that would have printed perfect scores
-and proved nothing.
+\subsection{Data}
+
+Table~\ref{tab:data} compares our two sources. Our simulator injects scam,
+takeover, mule, and agent patterns plus realistic noise. PaySim is a public
+mobile money dataset calibrated on real logs, used only for independent
+validation, never for training the product.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Source & Transactions & Fraud cases & Key signals \\
+\midrule
+Own simulator & 50,000 & $\sim$2,000 & device, location, reset, velocity, graph \\
+PaySim (adapted) & 108,213 & 8,213 & amount, velocity, type, graph \\
+\bottomrule
+\end{tabular}
+\caption{Training data versus independent validation data.}
+\label{tab:data}
+\end{table}
+
+\subsection{Models}
+
+\begin{description}[nosep]
+  \item[XGBoost classifier.] Learns fraud shapes from tens of thousands of
+    labeled examples and outputs a probability of fraud.
+  \item[IsolationForest.] Trained only on legitimate traffic, it flags behavior
+    unlike anything normal, with scores calibrated to training percentiles.
+  \item[Transaction graph.] Adds suspicion for receivers sitting near known
+    fraud wallets, catching mule rings invisible to single transfers.
+  \item[Ensemble.] A weighted blend of 0.7, 0.2, and 0.1 turns the three
+    signals into one score, mapped to allow, review, or hold with human
+    oversight.
+\end{description}
+A grounded language model narrates each case from the computed facts only,
+under a fixed template with sanitized inputs.
+
+\subsection{Evaluation}
+
+Table~\ref{tab:eval} reports the same code with no tuning on both datasets.
+On our data the system reaches 0.998 AUC against 0.81 for hand written rules.
+On PaySim, where our best signals are unavailable, it holds 0.90 while the
+rules collapse to a coin flip. We deliberately refused leakage features that
+would have printed perfect scores and proved nothing.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Metric & Ours (model) & Ours (rules) & PaySim (model) & PaySim (rules) \\
+\midrule
+AUC & 0.9982 & 0.8119 & 0.8985 & 0.5049 \\
+Precision@100 & 1.00 & 0.86 & 1.00 & 0.83 \\
+Recall@5\%FPR & 0.9938 & 0.2149 & 0.6286 & 0.0000 \\
+p95 latency & 25.9 ms & & 23.2 ms & \\
+\bottomrule
+\end{tabular}
+\caption{Same pipeline, same metrics, foreign data included.}
+\label{tab:eval}
+\end{table}
 
 \section{Intended real life impact}
 
-For analysts, Vigil turns a fifteen minute manual investigation into a two
-minute review, which our business simulation converts into loss prevented in
-BDT and analyst hours saved per thousand high risk holds. For users, faster
-holds on scams and takeovers mean stolen money stops moving sooner, and clear
-warnings protect first time and vulnerable customers before they pay a
-stranger. For upay, every held scam is trust kept, and trust is what grows a
-wallet. The API contract is stateless and ready to plug into a real stream,
-with weekly retraining on governed labels as the path from this prototype to a
-pilot. Responsible by design throughout: synthetic data only, explainable
-scores, fairness measured, human oversight on every consequential action.
+\begin{itemize}[nosep]
+  \item \textbf{Analysts:} a fifteen minute manual investigation becomes a two
+    minute review, converted in our business simulation into loss prevented
+    in BDT and analyst hours saved per thousand high risk holds.
+  \item \textbf{Users:} faster holds on scams and takeovers stop stolen money
+    sooner, and clear warnings protect first time and vulnerable customers
+    before they pay a stranger.
+  \item \textbf{upay:} every held scam is trust kept, and trust is what grows
+    a wallet.
+\end{itemize}
+The API contract is stateless and ready to plug into a real stream, with
+weekly retraining on governed labels as the path from prototype to pilot.
+Responsible by design throughout: synthetic data only, explainable scores,
+fairness measured, human oversight on every consequential action.
 
 \end{document}
