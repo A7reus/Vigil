@@ -1,7 +1,7 @@
 """Request/response schemas for POST /score etc."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -21,11 +21,18 @@ class ScoreRequest(BaseModel):
     @field_validator("timestamp")
     @classmethod
     def _must_be_iso8601(cls, v: str) -> str:
+        # History is tz-naive; mixing aware/naive datetimes crashes comparisons
+        # (500) and out-of-range years overflow pandas. Normalize here so every
+        # downstream consumer sees a bounded naive ISO string.
         try:
-            datetime.fromisoformat(v)
+            ts = datetime.fromisoformat(v.replace("Z", "+00:00"))
         except Exception:
             raise ValueError("timestamp must be ISO-8601, e.g. 2026-08-15T23:10:00")
-        return v
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+        if not (datetime(2020, 1, 1) <= ts <= datetime(2030, 12, 31)):
+            raise ValueError("timestamp out of supported range 2020-01-01..2030-12-31")
+        return ts.isoformat()
 
     @field_validator("type")
     @classmethod
