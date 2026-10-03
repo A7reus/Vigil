@@ -152,7 +152,9 @@ def test_env_example_contract():
     for var in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
                 "VIGIL_ALERTS_LIMIT", "VIGIL_RATE_LIMIT_PER_MIN"):
         assert var in got, var
-    assert not any(v.startswith("gsk_") and len(v) > 20 for v in got.values())
+    import re
+    assert not any(re.search(r"gsk_[A-Za-z0-9]{20,}", v) for v in got.values()), \
+        "real-looking secret in .env.example"
 
 
 def test_rate_limit_429s(monkeypatch, client):
