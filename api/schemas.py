@@ -1,6 +1,7 @@
 """Request/response schemas for POST /score etc."""
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -40,6 +41,15 @@ class ScoreRequest(BaseModel):
         allowed = {"P2P", "merchant", "bill", "cash-out", "salary-in"}
         if v not in allowed:
             raise ValueError(f"type must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("amount")
+    @classmethod
+    def _must_be_finite(cls, v: float) -> float:
+        # Defense in depth: the JSON middleware already rejects non-finite
+        # literals over HTTP; this covers direct Python callers.
+        if not math.isfinite(v):
+            raise ValueError("amount must be a finite number")
         return v
 
 

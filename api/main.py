@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from contextlib import asynccontextmanager
@@ -11,8 +12,9 @@ from uuid import uuid4
 
 import networkx as nx
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.llm import narrate
 from api.rules import decide, get_config
@@ -113,6 +115,39 @@ app = FastAPI(title="ScamShield Risk API", version="0.1.0", lifespan=lifespan)
 # the API from any origin). Restrict allow_origins to the deployed frontend
 # domain before any production use.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+def _reject_nonfinite_constant(v: str):
+    raise ValueError(f"non-finite JSON literal rejected: {v}")
+
+
+def _ensure_finite(obj) -> None:
+    """Walk parsed JSON; stdlib json silently accepts NaN/Infinity (and 1e999
+    overflows to inf), which then crash error serialization with a 500."""
+    if isinstance(obj, float):
+        if not math.isfinite(obj):
+            raise ValueError("non-finite number")
+    elif isinstance(obj, list):
+        for v in obj:
+            _ensure_finite(v)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _ensure_finite(v)
+
+
+@app.middleware("http")
+async def _reject_nonfinite_json(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH") and "application/json" in request.headers.get("content-type", ""):
+        try:
+            raw = (await request.body()).decode("utf-8")
+            _ensure_finite(json.loads(raw, parse_constant=_reject_nonfinite_constant))
+        except ValueError as e:
+            log.warning("rejected non-JSON/non-finite body: %s", e)
+            return JSONResponse({"detail": f"invalid JSON body: {e}"}, status_code=422)
+        except Exception as e:
+            log.warning("rejected unreadable body: %s", e)
+            return JSONResponse({"detail": "body must be UTF-8 JSON"}, status_code=422)
+    return await call_next(request)
 
 
 @app.get("/health")
