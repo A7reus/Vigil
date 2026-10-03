@@ -58,7 +58,9 @@ class _FakeHTTP:
 
     def __call__(self, req, timeout=None):
         self.captured["url"] = req.full_url
-        self.captured["auth"] = req.get_header("Authorization")
+        headers = {k.lower(): v for k, v in req.header_items()}
+        self.captured["auth"] = headers.get("authorization")
+        self.captured["ua"] = headers.get("user-agent", "")
         if self.exc:
             raise self.exc
         return self
@@ -76,34 +78,64 @@ class _FakeHTTP:
 def test_call_llm_success_path(monkeypatch):
     import api.llm as llm
     monkeypatch.setenv("LLM_API_KEY", "gsk_test")
-    fake = _FakeHTTP({"choices": [{"message": {"content": "SUMMARY"}}]})
-    monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
-    out = llm._call_llm("hello")
-    assert out == "SUMMARY"
-    assert fake.captured["auth"] == "Bearer gsk_test"
-    assert "groq" in fake.captured["url"]  # default endpoint
+    seen = {}
+
+    def _fake_httpx(base, api_key, payload):
+        seen.update(base=base, auth=api_key, model=payload["model"])
+        return "SUMMARY"
+
+    monkeypatch.setattr(llm, "_post_httpx", _fake_httpx)
+    assert llm._call_llm("hello") == "SUMMARY"
+    assert seen["auth"] == "gsk_test" and "groq" in seen["base"]  # default endpoint
 
 
 def test_call_llm_transport_failure_returns_none(monkeypatch):
     import api.llm as llm
     monkeypatch.setenv("LLM_API_KEY", "gsk_test")
-    monkeypatch.setattr(llm.urllib.request, "urlopen",
-                        _FakeHTTP(exc=TimeoutError("venue wifi died")))
+
+    def _boom(*a, **k):
+        raise TimeoutError("venue wifi died")
+
+    def _must_not_fall_back(*a, **k):
+        raise AssertionError("no second attempt after transport errors")
+
+    monkeypatch.setattr(llm, "_post_httpx", _boom)
+    monkeypatch.setattr(llm, "_post_urllib", _must_not_fall_back)
     assert llm._call_llm("hello") is None
+
+
+def test_call_llm_falls_back_to_urllib_without_httpx(monkeypatch):
+    import api.llm as llm
+    monkeypatch.setenv("LLM_API_KEY", "gsk_test")
+
+    def _no_httpx(*a, **k):
+        raise ImportError("minimal install")
+
+    fake = _FakeHTTP({"choices": [{"message": {"content": "VIA-URLLIB"}}]})
+    monkeypatch.setattr(llm, "_post_httpx", _no_httpx)
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
+    assert llm._call_llm("hello") == "VIA-URLLIB"
+
+
+def test_post_urllib_sends_auth_and_custom_ua(monkeypatch):
+    import api.llm as llm
+    fake = _FakeHTTP({"choices": [{"message": {"content": "ok"}}]})
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
+    assert llm._post_urllib("https://x.test", "k123", {"model": "m"}) == "ok"
+    assert fake.captured["auth"] == "Bearer k123"
+    assert "Python-urllib" not in fake.captured.get("ua", "Python-urllib")
 
 
 def test_call_llm_no_key_short_circuits(monkeypatch):
     import api.llm as llm
     monkeypatch.delenv("LLM_API_KEY", raising=False)
-    called = []
 
     def _must_not_call(*a, **k):
-        called.append(True)
-        raise AssertionError("urlopen must not be called without a key")
+        raise AssertionError("no transport without a key")
 
-    monkeypatch.setattr(llm.urllib.request, "urlopen", _must_not_call)
+    monkeypatch.setattr(llm, "_post_httpx", _must_not_call)
+    monkeypatch.setattr(llm, "_post_urllib", _must_not_call)
     assert llm._call_llm("hello") is None
-    assert called == []
 
 
 def test_narrate_uses_live_text_when_available(monkeypatch):
@@ -120,8 +152,8 @@ def test_prompt_carries_system_guard_and_evidence(monkeypatch):
     import inspect
 
     import api.llm as llm
-    # The guard lives in the system message — capture source before patching.
-    assert "untrusted data" in inspect.getsource(llm._call_llm)
+    # The guard lives in the system message built by _payload.
+    assert "untrusted data" in inspect.getsource(llm._payload)
     prompts = []
     monkeypatch.setattr(llm, "_call_llm", lambda p: prompts.append(p) or "x")
     llm.narrate({"sender_id": "C1", "receiver_id": "C2", "amount": 1,
