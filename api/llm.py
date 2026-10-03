@@ -62,7 +62,9 @@ def _call_llm(prompt: str) -> str | None:
     """Optional Groq/OpenAI-compatible call. Returns None on any failure -> fallback."""
     api_key = os.getenv("LLM_API_KEY", "")
     base = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-    model = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
+    # Default follows Groq's replacement for the Aug-2026 shutdown of
+    # llama-3.1-8b-instant. Override per-env; see tests/test_llm_live.py.
+    model = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
     if not api_key:
         return None
     try:
