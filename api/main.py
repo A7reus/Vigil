@@ -79,21 +79,37 @@ async def lifespan(app: FastAPI):
 
 
 def _build_alerts(limit: int = 500) -> list[dict]:
-    """Causal rescoring: rebuild features on the slice in time order (no future leakage)."""
+    """Analyst triage queue: score a wide recent window, keep the top `limit`
+    by risk. Features stay causal (past-only, no future leakage); only the
+    *selection* changed — latest-N showed whatever fraud density the tail
+    window happened to have, which demos poorly and triages worse."""
     assert store is not None
+    import numpy as np
+
     from features.build import FEATURE_COLS, build_features
     cfg = get_config()
-    recent = store.txns.tail(limit).copy()
+    window = int(os.getenv("VIGIL_ALERT_WINDOW", "2000"))
+    recent = store.txns.tail(window).copy()
     # build causal features over history + recent so velocity/seen-flags are past-only
-    hist = store.txns.head(max(0, len(store.txns) - limit))
+    hist = store.txns.head(max(0, len(store.txns) - window))
     combined = pd.concat([hist, recent], ignore_index=True)
     feat_all = build_features(combined, store.customers, store.devices)
     feat_recent = feat_all.tail(len(recent)).reset_index(drop=True)
     recent = recent.reset_index(drop=True)
-    out = []
     assert graph is not None, "lifespan must build graph first"
-    for i, r in recent.iterrows():
-        frow = feat_recent.iloc[i]
+    gcfg = cfg["graph"]
+    # Batched ML scores for the whole window (one predict call), then graph
+    # boosts, then full detail (reasons need per-row SHAP) only for the top K.
+    X = feat_recent[FEATURE_COLS].to_numpy(dtype=float)
+    boosts = np.array([network_risk(
+        r, graph, fraud_set, k_threshold=gcfg["two_hop_fraud_neighbors_threshold"],
+        boost_per_hit=gcfg["boost_per_hit"], max_boost=gcfg["max_boost"])["boost"]
+        for r in recent["receiver"].tolist()], dtype=float)
+    scores = infer.score_batch(X, boosts, cfg["ensemble_weights"])
+    out = []
+    for i in np.argsort(-scores)[:limit]:
+        i = int(i)
+        r, frow = recent.iloc[i], feat_recent.iloc[i]
         # Convert to plain Python floats so the cache is JSON-serializable
         # and reusable by /case without re-featurizing with dummy values.
         feats = {c: float(frow[c]) for c in FEATURE_COLS}
@@ -104,8 +120,8 @@ def _build_alerts(limit: int = 500) -> list[dict]:
                "channel": r["channel"], "device_id": r["device_id"], "location": r["location"],
                "timestamp": r["timestamp"], "type": r["type"]}
         gf = network_risk(txn["receiver_id"], graph, fraud_set,
-                          k_threshold=cfg["graph"]["two_hop_fraud_neighbors_threshold"],
-                          boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])
+                          k_threshold=gcfg["two_hop_fraud_neighbors_threshold"],
+                          boost_per_hit=gcfg["boost_per_hit"], max_boost=gcfg["max_boost"])
         s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
         d = decide(s["risk_score"])
         out.append({"txn_id": r["txn_id"], **txn, **s, **d,

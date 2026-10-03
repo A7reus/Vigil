@@ -38,6 +38,15 @@ def test_alerts_strip_internals(client):
 
 
 @needs_stack
+def test_alerts_ranked_descending(client):
+    # Triage invariant: the queue is top-risk-first, not latest-first.
+    a = client.get("/alerts?limit=50").json()["alerts"]
+    assert len(a) > 1
+    scores = [r["risk_score"] for r in a]
+    assert all(b <= a for a, b in zip(scores, scores[1:]))
+
+
+@needs_stack
 def test_case_reuses_cached_features(client):
     tid = client.get("/alerts?limit=1").json()["alerts"][0]["txn_id"]
     c = client.get(f"/case/{tid}?lang=bn").json()

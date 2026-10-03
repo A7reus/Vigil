@@ -42,6 +42,7 @@ environment variables take precedence over the file.
 | `LLM_BASE_URL` | OpenAI-compatible endpoint | `https://api.groq.com/openai/v1` |
 | `LLM_MODEL` | Chat model (default follows Groq's post-Aug-2026 replacement) | `openai/gpt-oss-20b` |
 | `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
+| `VIGIL_ALERT_WINDOW` | Recent rows scored to fill the queue; top risks kept | `2000` |
 | `VIGIL_RATE_LIMIT_PER_MIN` | Per-IP writes/min on `/score` + `/decision` (`0` disables) | `120` |
 
 ## Run and build commands
