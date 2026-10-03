@@ -1,4 +1,4 @@
-"""ScamShield FastAPI: POST /score, GET /alerts, GET /case/:id, POST /decision."""
+"""Vigil FastAPI: POST /score, GET /alerts, GET /case/:id, POST /decision."""
 from __future__ import annotations
 
 import json
@@ -117,7 +117,7 @@ def _build_alerts(limit: int = 500) -> list[dict]:
     return sorted(out, key=lambda x: -x["risk_score"])
 
 
-app = FastAPI(title="ScamShield Risk API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Vigil Risk API", version="0.1.0", lifespan=lifespan)
 # NOTE (security): open CORS is intentional for the hackathon demo (judges hit
 # the API from any origin). Restrict allow_origins to the deployed frontend
 # domain before any production use.

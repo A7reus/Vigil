@@ -1,4 +1,4 @@
-"""Evaluate ScamShield on the clean chronological test split.
+"""Evaluate Vigil on the clean chronological test split.
 
 Metrics: AUC, Precision@100, Recall@5%FPR, p95 scoring latency,
 fairness (FPR by district/age_group/account_age), business simulation.

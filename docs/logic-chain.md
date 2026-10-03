@@ -14,5 +14,5 @@
 
 **Problem statement (template filled):**
 For upay risk analysts facing opaque fraud alerts, slow manual investigation causes delayed holds and lost funds.
-We build ScamShield, an AI investigation console that uses synthetic behavioral + graph features to score,
+We build Vigil, an AI investigation console that uses synthetic behavioral + graph features to score,
 explain, and recommend action, with success measured by Precision@100 ≥ 0.6 at p95 <200ms and positive analyst time saved.

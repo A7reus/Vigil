@@ -1,1 +1,1 @@
-"""ScamShield API package."""
+"""Vigil API package."""

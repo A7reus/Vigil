@@ -1,4 +1,4 @@
-# ScamShield — Trust & Risk Intelligence for upay (Track 01)
+# Vigil — Trust & Risk Intelligence for upay (Track 01)
 
 > For upay users losing money to scams/ATO/mules and analysts drowning in opaque alerts, slow manual review causes loss + churn. We build a real-time risk scorer + graph + LLM investigator on synthetic transactions to score, explain, and recommend action — measured by Precision@100 + investigation time saved.
 

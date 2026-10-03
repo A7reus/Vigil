@@ -1,4 +1,4 @@
-# ScamShield thresholds — edit on-site in <30 min without touching ML code.
+# Vigil thresholds — edit on-site in <30 min without touching ML code.
 # Score bands -> action. Never auto-block money: high impact stays human-reviewed.
 bands:
   high: 0.85      # > high: step-up-auth + hold + analyst review
