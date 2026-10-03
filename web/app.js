@@ -30,6 +30,8 @@ async function api(path, opts) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+let queueLoaded = false;
+
 async function checkHealth(retries = 5) {
   // Free-tier hosts sleep and redeploy; attempts often race the wake-up, so
   // retry with backoff and always report the real reason. The /health link
@@ -42,7 +44,9 @@ async function checkHealth(retries = 5) {
       $('health').textContent =
         `online · ${h.history_rows} txns · ${h.graph_nodes} graph nodes · queue ${h.queue_size}`;
       $('health').className = 'health ok';
-      return;
+      clearError();
+      if (!queueLoaded) loadQueue();  // we arrived during an outage; catch up
+      return true;
     } catch (err) {
       lastErr = err.message;
       $('health').textContent = `contacting API (try ${i + 1}/${retries})…`;
@@ -51,12 +55,20 @@ async function checkHealth(retries = 5) {
     }
   }
   $('health').innerHTML =
-    `API offline (${esc(lastErr)}). Self-hosting? start: ` +
+    `API offline (${esc(lastErr)}), re-checking every 30s. Self-hosting? start: ` +
     `<code>uvicorn api.main:app --port 8000</code>. Hosted demo? open ` +
     `<a href="/health" target="_blank" rel="noopener">/health</a> directly: ` +
     `if it fails too, the network or host is down; if it works, hard-refresh this page.`;
   $('health').className = 'health bad';
+  // Keep polling while offline so a load during a restart heals itself
+  // instead of freezing on a stale message. Skipped in hidden tabs.
+  setTimeout(() => { if (!document.hidden) checkHealth(2); }, 30000);
+  return false;
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) checkHealth(1);
+});
 
 function badge(level) {
   return `<span class="badge ${esc(level)}">${esc(level)}</span>`;
@@ -95,6 +107,7 @@ function renderQueue() {
     $('queueBody').innerHTML = '<tr><td colspan="6" class="muted">no alerts match filters</td></tr>';
     return;
   }
+  queueLoaded = true;
   $('queueBody').innerHTML = rows.map((r) => `
     <tr data-id="${esc(r.txn_id)}" class="${r.txn_id === selectedId ? 'sel' : ''}">
       <td><strong>${Number(r.risk_score).toFixed(2)}</strong>${decided[r.txn_id] ? ` <span class="muted">(${esc(decided[r.txn_id])})</span>` : ''}</td>
