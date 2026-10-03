@@ -1,4 +1,4 @@
-# Vigil — one-page logic chain (guideline Sec 10)
+# Vigil: one-page logic chain (guideline Sec 10)
 
 | Step | Answer |
 |---|---|

@@ -19,7 +19,7 @@ before any enforcement; never auto-tune on unreviewed labels.
 ## Security
 - CORS `*` is demo-only (see code comment in `api/main.py`); restrict to the
   deployed frontend domain for anything beyond the hackathon.
-- Auth: none by design for judging; compensated by (a) LIVE isolation —
+- Auth: none by design for judging; compensated by (a) LIVE isolation, which keeps
   unreviewed `/score` traffic is scoring-neutral (separate capped buffer,
   excluded from features/seen-sets/graph/history eviction), (b) per-IP rate
   limiting on `/score` + `/decision` (`VIGIL_RATE_LIMIT_PER_MIN`, default 120,

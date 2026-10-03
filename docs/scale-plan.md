@@ -5,9 +5,9 @@
 - [x] AI beyond deterministic rules (ensemble beats rule baseline 0.99 vs 0.21 R@5%FPR)
 - [x] Clear action after prediction (allow / review / step-up+hold, human-reviewed)
 - [x] Measurable benefit (`eval.business`: loss prevented BDT + minutes saved per 1000 holds)
-- [~] Validatable with real data (same API contract; needs governed labels — future)
+- [~] Validatable with real data (same API contract; needs governed labels, a future step)
 - [x] Privacy/fairness/explainability addressed (see `security.md`)
-- [~] Integratable (stateless FastAPI + `/metrics`; needs auth, queue,Idempotency for prod)
+- [~] Integratable (stateless FastAPI plus `/metrics`; needs auth, queueing, and idempotency for prod)
 
 ## Post-hackathon pathway
 1. Competition → prototype + `docs/eval-sample.json` + console
@@ -25,7 +25,7 @@ Real stream → feature store (same 26 cols, past-only windows) → `POST /score
 Thresholds stay in `config/thresholds.yaml` so ops tunes without ML deploys.
 
 ## Business assumptions (explicit)
-`eval.business_sim`: top-1000 holds, 2 min/case with narrative vs 15 min manual
-(13 min saved each). Replace 2/15 with measured times during pilot; multiply by
-loaded analyst hourly cost for ROI. False holds cost customer friction — track
-appeal rate alongside precision.
+`eval.business_sim` assumes top-1000 holds at 2 minutes per case with a narrative,
+versus 15 minutes manual (13 minutes saved each). Replace 2 and 15 with measured
+times during the pilot, then multiply by loaded analyst hourly cost for ROI.
+False holds cost customer friction, so track appeal rate alongside precision.

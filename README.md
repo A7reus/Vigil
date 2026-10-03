@@ -1,16 +1,16 @@
-# Vigil — Trust & Risk Intelligence for upay (Track 01)
+# Vigil: Trust and Risk Intelligence for upay (Track 01)
 
-> For upay users losing money to scams/ATO/mules and analysts drowning in opaque alerts, slow manual review causes loss + churn. We build a real-time risk scorer + graph + LLM investigator on synthetic transactions to score, explain, and recommend action — measured by Precision@100 + investigation time saved.
+> Upay users lose money to scams, takeovers, and mule rings while analysts drown in alerts they cannot explain. Slow manual review means losses mount and users leave. Vigil is a real-time risk scorer with a transaction graph and an LLM investigator, built on synthetic transactions to score each transfer, explain why it looks risky, and recommend what to do next. Success is measured by Precision@100 and investigation time saved.
 
 Answers the Track 01 test: **What happened? Why is it risky? What should upay do next?**
 
 ## Features
-- **Real-time scoring API** — `POST /score` in → `risk_score 0-1, risk_level, top_3_reasons, recommended_action` out. Ensemble `0.7·classifier + 0.2·anomaly + 0.1·graph`. Bands in `config/thresholds.yaml`: `>0.85` hold+step-up+review, `0.6–0.85` review, `<0.6` allow. Never auto-blocks money.
-- **AI engine (4x)** — XGBoost classifier (HGB fallback) + IsolationForest anomaly (train-calibrated percentile, no test leakage) + NetworkX 2-hop mule boost + grounded LLM investigator (EN/BN, offline fallback). Reasons combine auditable rules with per-row SHAP attributions.
-- **Analyst queue** — `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline + narrative, reuses cached causal features), `POST /decision` (feedback loop for retrain).
-- **Analyst console** — no-build static frontend in `/web` served at `GET /`: risk queue with level filter + search, case detail with EN/BN narrative + timeline + decision buttons, and a `POST /score` playground.
-- **Evaluation** — `python -m eval.evaluate`: Precision@100, Recall@5%FPR, AUC vs rule baseline, p95 latency, fairness FPR by district/account-age, business simulation (loss prevented, analyst-minutes saved). Batched scoring (~2s for 8k rows vs ~100s before).
-- **Cross-dataset check** — same pipeline on PaySim MFS data (`eval/paysim_adapter.py`, offline): AUC 0.90 vs rules 0.50 with our best signals unavailable. See `docs/paysim-validation.md`.
+- **Real-time scoring API**: `POST /score` takes a transfer and returns `risk_score` (0 to 1), `risk_level`, `top_3_reasons`, and `recommended_action`. The ensemble blends `0.7·classifier + 0.2·anomaly + 0.1·graph`. Bands in `config/thresholds.yaml`: above `0.85` means hold plus step-up plus review, `0.6–0.85` means review, below `0.6` means allow. Money is never blocked automatically.
+- **AI engine (4 parts)**: XGBoost classifier (HGB fallback) plus IsolationForest anomaly scores calibrated to percentiles on training data with no test leakage, plus a NetworkX 2-hop mule boost, plus a grounded LLM investigator (English/Bangla, offline fallback). Reasons combine auditable rules with per-row SHAP attributions.
+- **Analyst queue**: `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline plus narrative, reusing the exact cached causal features), `POST /decision` (feedback loop for retraining).
+- **Analyst console**: a static frontend in `/web` with no build step, served at `GET /`: a risk queue with level filter and search, case detail with English/Bangla narrative plus timeline plus decision buttons, and a `POST /score` playground.
+- **Evaluation**: `python -m eval.evaluate` reports Precision@100, Recall@5%FPR, AUC against a rule baseline, p95 latency, fairness (FPR by district and account age), and a business simulation (loss prevented, analyst minutes saved). Batched scoring handles 8k rows in about 2s, down from about 100s.
+- **Cross-dataset check**: the same pipeline on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules, with our best signals unavailable. See `docs/paysim-validation.md`.
 
 ## Technology stack
 Python 3.12+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib.
@@ -38,7 +38,7 @@ environment variables take precedence over the file.
 
 | Name | Purpose | Example |
 |---|---|---|
-| `LLM_API_KEY` | Live investigator narratives (leave unset for offline fallback) | `gsk_...` (placeholder — never commit secrets) |
+| `LLM_API_KEY` | Live investigator narratives (leave unset for offline fallback) | `gsk_...` (placeholder: never commit secrets) |
 | `LLM_BASE_URL` | OpenAI-compatible endpoint | `https://api.groq.com/openai/v1` |
 | `LLM_MODEL` | Chat model (default follows Groq's post-Aug-2026 replacement) | `openai/gpt-oss-20b` |
 | `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
@@ -60,32 +60,32 @@ python -m scripts.run_demo              # 4k-txn end-to-end: generate → train 
 ```
 
 ## Live deployment URL
-`TBD — deploy API to Render/Railway and put URL here before T+72h` (judges require a live link; local fallback: follow Run commands + video).
+`TBD: deploy API to Render/Railway and put URL here before T+72h` (judges require a live link; local fallback: follow Run commands + video).
 
 ## Testing instructions
 ```bash
-pytest -q                                   # 43 tests: smoke + API + security + LLM (mocked) + intensive units (needs data/ + artifacts/)
+pytest -q                                   # 45 tests + 3 live-gated (need a key): smoke, API, security, LLM (mocked), intensive units (needs data/ + artifacts/)
 python -m eval.evaluate --sample 20000      # offline metrics + fairness + business sim
 # API verify: /health -> {"ok": true}; /score latency_ms should be <200 p95 locally
 # Frontend verify: GET / -> 200 text/html; queue + case + playground in browser
 ```
 
 ## Other configuration
-- `config/thresholds.yaml` — change bands/weights/graph thresholds on-site in <30 min, no ML retrain. Bound cold start with `VIGIL_ALERTS_LIMIT=100`.
-- `api/llm.py: TEMPLATE_EN/BN` — prompt lives outside decision logic; toggle `lang: en|bn`.
+- `config/thresholds.yaml`: change bands, weights, and graph thresholds on-site in under 30 min with no ML retrain. Bound cold start with `VIGIL_ALERTS_LIMIT=100`.
+- `api/llm.py: TEMPLATE_EN/BN`: the prompt lives outside decision logic; toggle with `lang: en|bn`.
 - `data/` + `artifacts/` are regenerable and git-ignored. Clean test split: last 20% by timestamp, never trained on. `artifacts/anomaly_calib.npy` is the train-only anomaly calibration (regenerated on retrain).
 - Synthetic-data assumptions documented in `data_gen/generate.py` header, including hardened noise (legit new-device/night/round-amount/reset/fan-in + fraud overlap). All amounts in BDT (৳).
 - Ops: `GET /health` (queue/startup info), `GET /metrics` (requests, decisions, startup). Structured logs via stdlib `logging`.
 - Security: open CORS is demo-only (see comment in `api/main.py`); restrict before prod. See `docs/security.md`.
 
 ## Docs
-- `docs/logic-chain.md` — 9-step product logic + problem statement
-- `docs/data-dictionary.md` — tables, patterns, features
-- `docs/scale-plan.md` — readiness checklist + integration path + business math
-- `docs/security.md` — privacy, explainability, fairness, prompt-injection, oversight
-- `docs/onsite-runbook.md` — final-day playbook (triage → commit → demo)
-- `docs/eval-sample.json` — reference 50k eval output (model vs baseline + fairness + business)
-- `docs/paysim-validation.md` + `docs/paysim-eval.json` — independent check on foreign MFS data
+- `docs/logic-chain.md`: 9-step product logic plus problem statement
+- `docs/data-dictionary.md`: tables, patterns, features
+- `docs/scale-plan.md`: readiness checklist plus integration path plus business math
+- `docs/security.md`: privacy, explainability, fairness, prompt injection, oversight
+- `docs/onsite-runbook.md`: final-day playbook (triage, then commit, then demo)
+- `docs/eval-sample.json`: reference 50k eval output (model vs baseline plus fairness plus business)
+- `docs/paysim-validation.md` + `docs/paysim-eval.json`: independent check on foreign MFS data
 
 ## Project structure
 ```
@@ -95,7 +95,7 @@ python -m eval.evaluate --sample 20000      # offline metrics + fairness + busin
 /api         FastAPI: main/store/rules/llm/schemas (+ static /web mount, /metrics)
 /web         analyst console: index.html/app.js/styles.css + favicon (no build step)
 /eval        metrics vs baseline + fairness + business sim (batched)
-/docs        logic-chain, data-dictionary, scale-plan, security, runbook, eval-sample
+/docs        logic-chain, data-dictionary, scale-plan, security, runbook, eval-sample, paysim-validation
 /config      thresholds.yaml (on-site tunable)
 /tests /scripts
 ```
