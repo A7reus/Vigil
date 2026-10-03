@@ -142,6 +142,19 @@ def test_password_reset_flag_reachable(client):
 
 
 @needs_stack
+def test_env_example_contract():
+    # .env.example must document every runtime env var with placeholder
+    # values only — never a real secret.
+    from pathlib import Path
+    lines = [ln.strip() for ln in Path(".env.example").read_text().splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    got = dict(ln.split("=", 1) for ln in lines)
+    for var in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
+                "VIGIL_ALERTS_LIMIT", "VIGIL_RATE_LIMIT_PER_MIN"):
+        assert var in got, var
+    assert not any(v.startswith("gsk_") and len(v) > 20 for v in got.values())
+
+
 def test_rate_limit_429s(monkeypatch, client):
     # Finding 4 (flood): per-IP bucket trips with a JSON 429, restores after.
     import api.main as main

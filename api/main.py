@@ -23,6 +23,13 @@ from api.store import HistoryStore
 from models import infer
 from models.graph import build_graph, fraud_nodes, network_risk
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()  # so a local `.env` (see .env.example) feeds os.getenv below
+except ImportError:
+    pass  # minimal installs without python-dotenv: plain environment only
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("vigil")
 

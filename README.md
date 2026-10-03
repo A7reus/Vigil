@@ -32,6 +32,9 @@ python -m models.train --data data --artifacts artifacts
 ```
 
 ## Environment variables
+Copy `.env.example` to `.env` (git-ignored, loaded on startup); plain
+environment variables take precedence over the file.
+
 | Name | Purpose | Example |
 |---|---|---|
 | `LLM_API_KEY` | Live investigator narratives (leave unset for offline fallback) | `gsk_...` (placeholder — never commit secrets) |
