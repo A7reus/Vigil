@@ -2,10 +2,10 @@
   "n_test": 4031,
   "fraud_rate_test": 0.1201,
   "model": {
-    "auc": 0.998,
+    "auc": 0.9982,
     "precision@100": 1.0,
-    "recall@5%FPR": 0.9897,
-    "p95_latency_ms": 24.58
+    "recall@5%FPR": 0.9938,
+    "p95_latency_ms": 25.88
   },
   "rule_baseline": {
     "auc": 0.8119,
@@ -14,19 +14,19 @@
   },
   "fairness_FPR@sweep": {
     "district": {
-      "Barishal": 0.0042,
-      "Chattogram": 0.0,
-      "Dhaka": 0.0023,
-      "Khulna": 0.0,
-      "Mymensingh": 0.0,
-      "Rajshahi": 0.0029,
+      "Barishal": 0.0085,
+      "Chattogram": 0.0019,
+      "Dhaka": 0.0085,
+      "Khulna": 0.0115,
+      "Mymensingh": 0.0051,
+      "Rajshahi": 0.0058,
       "Rangpur": 0.0,
-      "Sylhet": 0.0
+      "Sylhet": 0.0083
     },
     "account_age_bucket": {
       "new": 0.0029,
-      "mid": 0.0,
-      "old": 0.0015
+      "mid": 0.0041,
+      "old": 0.0077
     }
   },
   "business": {
@@ -36,5 +36,5 @@
     "analyst_minutes": 2000,
     "minutes_saved_vs_manual": 13000
   },
-  "eval_latency_total_s": 5.1
+  "eval_latency_total_s": 6.6
 }
