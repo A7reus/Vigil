@@ -1,15 +1,24 @@
 \documentclass[11pt,a4paper]{article}
+\usepackage{microtype}
 \usepackage[margin=1in]{geometry}
-\usepackage{hyperref}
 \usepackage{setspace}
 \usepackage{booktabs}
 \usepackage{enumitem}
+\usepackage[font=small,labelfont=bf,skip=6pt]{caption}
 \usepackage{tikz}
 \usetikzlibrary{positioning}
+\usepackage[hidelinks]{hyperref}% load last
+\captionsetup[table]{position=top}
+\captionsetup[figure]{position=bottom}
 \setstretch{1.15}
+\setlength{\parindent}{0pt}
 \setlength{\parskip}{0.6em}
-\tikzstyle{box} = [rectangle, rounded corners, draw, text width=1.7cm, minimum height=0.8cm, text centered, font=\footnotesize]
-\tikzstyle{wide} = [rectangle, rounded corners, draw, text width=2.2cm, minimum height=0.8cm, text centered, font=\footnotesize]
+\renewcommand{\arraystretch}{1.15}
+\tikzset{
+  >=stealth,
+  block/.style={rectangle, rounded corners, draw, align=center,
+    font=\footnotesize, minimum height=1.0cm},
+}
 \title{Vigil: Trust and Risk Intelligence for Mobile Money\\{\large AI Dev Fest 2026 AI Hackathon, Track 01}}
 \author{Team JU\_MergeConflict\\Daffodil International University}
 \date{October 2026}
@@ -45,27 +54,28 @@ analyst in charge.
 
 Figure~\ref{fig:arch} shows the full loop, which runs as three parts.
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=0.35cm and 0.35cm, scale=0.85, transform shape]
-  \node[wide] (data) {Data: own simulator + PaySim};
-  \node[wide, right=of data] (feat) {26 causal features};
-  \node[box, right=of feat] (xgb) {XGBoost};
-  \node[box, below=of xgb] (iso) {Isolation Forest};
-  \node[box, below=of iso] (gr) {Graph 2-hop};
-  \node[wide, right=of xgb] (ens) {Ensemble 0.7 / 0.2 / 0.1};
-  \node[wide, right=of ens] (narr) {Rules + LLM narrative};
-  \node[wide, right=of narr] (act) {Analyst decision};
+\begin{tikzpicture}[node distance=0.55cm]
+  \node[block, text width=1.9cm] (data) {Data: own simulator + PaySim};
+  \node[block, text width=1.5cm, right=of data] (feat) {26 causal features};
+  \node[block, text width=1.7cm, right=0.85cm of feat] (iso) {Isolation Forest};
+  \node[block, text width=1.7cm, above=0.2cm of iso] (xgb) {XGBoost};
+  \node[block, text width=1.7cm, below=0.2cm of iso] (gr) {Graph 2-hop};
+  \node[block, text width=2.1cm, right=0.85cm of iso] (ens) {Ensemble\\0.7 / 0.2 / 0.1};
+  \node[block, text width=2.1cm, right=of ens] (narr) {Rules + LLM narrative};
+  \node[block, text width=1.5cm, right=of narr] (act) {Analyst decision};
   \draw[->] (data) -- (feat);
-  \draw[->] (feat) -- (xgb);
+  \draw[->] (feat.east) to[out=0,in=180] (xgb.west);
   \draw[->] (feat) -- (iso);
-  \draw[->] (feat) -- (gr);
-  \draw[->] (xgb) -- (ens);
+  \draw[->] (feat.east) to[out=0,in=180] (gr.west);
+  \draw[->] (xgb.east) to[out=0,in=180] (ens.west);
   \draw[->] (iso) -- (ens);
-  \draw[->] (gr) -- (ens);
+  \draw[->] (gr.east) to[out=0,in=180] (ens.west);
   \draw[->] (ens) -- (narr);
   \draw[->] (narr) -- (act);
-  \draw[->] (act) |- ([yshift=-1.6cm]narr) -| (data);
+  \draw[->, dashed, rounded corners=4pt]
+    (act.south) |- ([yshift=-0.4cm]gr.south) -| (data.south);
 \end{tikzpicture}
 \caption{Vigil pipeline, from data to analyst action with a retraining loop.}
 \label{fig:arch}
@@ -113,8 +123,10 @@ takeover, mule, and agent patterns plus realistic noise. PaySim is a public
 mobile money dataset calibrated on real logs, used only for independent
 validation, never for training the product.
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
+\caption{Training data versus independent validation data.}
+\label{tab:data}
 \begin{tabular}{@{}lrrl@{}}
 \toprule
 Source & Transactions & Fraud cases & Key signals \\
@@ -123,8 +135,6 @@ Own simulator & 50,000 & $\sim$2,000 & device, location, reset, velocity, graph 
 PaySim (adapted) & 108,213 & 8,213 & amount, velocity, type, graph \\
 \bottomrule
 \end{tabular}
-\caption{Training data versus independent validation data.}
-\label{tab:data}
 \end{table}
 
 \subsection{Models}
@@ -151,8 +161,10 @@ On PaySim, where our best signals are unavailable, it holds 0.90 while the
 rules collapse to a coin flip. We deliberately refused leakage features that
 would have printed perfect scores and proved nothing.
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
+\caption{Same pipeline, same metrics, foreign data included.}
+\label{tab:eval}
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
 Metric & Ours (model) & Ours (rules) & PaySim (model) & PaySim (rules) \\
@@ -163,8 +175,6 @@ Recall@5\%FPR & 0.9938 & 0.2149 & 0.6286 & 0.0000 \\
 p95 latency & 25.9 ms & & 23.2 ms & \\
 \bottomrule
 \end{tabular}
-\caption{Same pipeline, same metrics, foreign data included.}
-\label{tab:eval}
 \end{table}
 
 \section{Intended real life impact}
