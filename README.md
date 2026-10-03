@@ -64,7 +64,7 @@ python -m scripts.run_demo              # 4k-txn end-to-end: generate → train 
 
 ## Testing instructions
 ```bash
-pytest -q                                   # 45 tests + 3 live-gated (need a key): smoke, API, security, LLM (mocked), intensive units (needs data/ + artifacts/)
+pytest -q                                   # 47 tests + 3 live-gated (need a key): smoke, API, security, LLM (mocked), intensive, paysim (needs data/ + artifacts/)
 python -m eval.evaluate --sample 20000      # offline metrics + fairness + business sim
 # API verify: /health -> {"ok": true}; /score latency_ms should be <200 p95 locally
 # Frontend verify: GET / -> 200 text/html; queue + case + playground in browser
@@ -88,14 +88,31 @@ python -m eval.evaluate --sample 20000      # offline metrics + fairness + busin
 - `docs/paysim-validation.md` + `docs/paysim-eval.json`: independent check on foreign MFS data
 
 ## Project structure
+Output of `tree -I '.git|__pycache__|data|artifacts|report.*'` (generated
+`data/`, `artifacts/`, and TeX build files omitted):
 ```
-/data_gen    synthetic customers/devices/transactions (hardened, overlapping)
-/features    causal batch feature layer (same logic as online store)
-/models      train.py (clf+anomaly+calibration), graph.py (2-hop), infer.py (ensemble+batch)
-/api         FastAPI: main/store/rules/llm/schemas (+ static /web mount, /metrics)
-/web         analyst console: index.html/app.js/styles.css + favicon (no build step)
-/eval        metrics vs baseline + fairness + business sim (batched)
-/docs        logic-chain, data-dictionary, scale-plan, security, runbook, eval-sample, paysim-validation
-/config      thresholds.yaml (on-site tunable)
-/tests /scripts
+.
+├── api                  FastAPI service: main (routes/mounts), store, rules, llm, schemas
+├── config               thresholds.yaml, tunable on-site with no ML retrain
+├── data_gen             synthetic customers/devices/transactions (hardened, overlapping)
+├── docs                 logic-chain, data-dictionary, scale-plan, security, runbook,
+│                        eval-sample, paysim-validation (plus their JSON evidence)
+├── eval                 evaluate.py (metrics vs baseline, fairness, business sim),
+│                        paysim_adapter.py (offline cross-dataset check)
+├── features             causal batch feature layer (same logic as online store)
+├── models               train.py (classifier plus anomaly plus calibration),
+│                        graph.py (2-hop mule boost), infer.py (ensemble plus batch)
+├── presentation         slides.pptx (hackathon slide deck)
+├── report               report.tex plus compiled report.pdf (project report)
+├── scripts              run_demo.py: 4k-transaction end-to-end (generate, train, score two cases)
+├── tests                test_smoke (rules, fallback, features), test_api (endpoints),
+│                        test_security (fuzz regressions), test_llm (mocked investigator),
+│                        test_llm_live (real provider, gated), test_intensive (eval math,
+│                        graph, causality), test_paysim (adapter contract)
+├── web                  analyst console: index.html, app.js, styles.css, favicon (no build step)
+├── .env.example         copy to .env; all runtime variables with placeholders
+├── .python-version      pins Python 3.14 for hosts like Render
+├── render.yaml          one-click Render blueprint (build, train, serve)
+├── requirements.txt     exact pinned dependencies including XGBoost, SHAP, LightGBM
+└── README.md            this file
 ```
