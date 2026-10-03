@@ -19,12 +19,21 @@ before any enforcement; never auto-tune on unreviewed labels.
 ## Security
 - CORS `*` is demo-only (see code comment in `api/main.py`); restrict to the
   deployed frontend domain for anything beyond the hackathon.
-- No auth/rate-limit: acceptable single-tenant demo; add API key + throttle
-  before pilot.
-- Prompt injection: sender/receiver/device IDs are attacker-influenceable and
-  flow into the LLM evidence JSON. The investigator is instructed to use values
-  verbatim within the template and never invent actions; high-impact actions
-  still require analyst confirmation (`step-up + hold + review`, never auto-block).
+- Auth: none by design for judging; compensated by (a) LIVE isolation —
+  unreviewed `/score` traffic is scoring-neutral (separate capped buffer,
+  excluded from features/seen-sets/graph/history eviction), (b) per-IP rate
+  limiting on `/score` + `/decision` (`VIGIL_RATE_LIMIT_PER_MIN`, default 120,
+  0 disables; 429 JSON), (c) strict input bounds (lengths, timestamp range,
+  finite JSON enforced by middleware). Add API keys before any pilot.
+- Ground truth: `/alerts` and `/case` never expose training labels.
+- Decisions: unknown `txn_id` → 404; same analyst+txn upserts instead of
+  duplicating; notes capped at 500 chars.
+- Prompt injection: raw fields are sanitized (`_safe()` strips control chars,
+  caps at 120) before prompts/narratives, and the system instruction treats
+  evidence values as untrusted data. High-impact actions still require analyst
+  confirmation (`step-up + hold + review`, never auto-block).
+- Frontend: every server value is HTML-escaped at render (`esc()` in
+  `web/app.js`); narratives use `textContent`.
 - Adversarial: exact-amount rules are dodged by near-round mule amounts in the
   generator; the model uses behavioral + graph signals, not amount alone.
 

@@ -37,6 +37,8 @@ python -m models.train --data data --artifacts artifacts
 | `LLM_API_KEY` | Live investigator narratives (leave unset for offline fallback) | `gsk_...` (placeholder — never commit secrets) |
 | `LLM_BASE_URL` | OpenAI-compatible endpoint | `https://api.groq.com/openai/v1` |
 | `LLM_MODEL` | Chat model | `llama-3.1-8b-instant` |
+| `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
+| `VIGIL_RATE_LIMIT_PER_MIN` | Per-IP writes/min on `/score` + `/decision` (`0` disables) | `120` |
 
 ## Run and build commands
 ```bash
@@ -58,7 +60,7 @@ python -m scripts.run_demo              # 4k-txn end-to-end: generate → train 
 
 ## Testing instructions
 ```bash
-pytest -q                                   # smoke + API integration (needs data/ + artifacts/)
+pytest -q                                   # smoke + API + security regression (needs data/ + artifacts/)
 python -m eval.evaluate --sample 20000      # offline metrics + fairness + business sim
 # API verify: /health -> {"ok": true}; /score latency_ms should be <200 p95 locally
 # Frontend verify: GET / -> 200 text/html; queue + case + playground in browser
