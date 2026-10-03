@@ -1,0 +1,31 @@
+{
+  "n_test": 7886,
+  "fraud_rate_test": 0.5166,
+  "model": {
+    "auc": 0.8985,
+    "precision@100": 1.0,
+    "recall@5%FPR": 0.6286,
+    "p95_latency_ms": 23.19
+  },
+  "rule_baseline": {
+    "auc": 0.5049,
+    "precision@100": 0.83,
+    "recall@5%FPR": 0.0
+  },
+  "fairness_FPR@sweep": {
+    "district": {
+      "Dhaka": 0.079
+    },
+    "account_age_bucket": {
+      "mid": 0.079
+    }
+  },
+  "business": {
+    "holds": 1000,
+    "precision": 1.0,
+    "loss_prevented_bdt": 2874399492.58,
+    "analyst_minutes": 2000,
+    "minutes_saved_vs_manual": 13000
+  },
+  "eval_latency_total_s": 61.9
+}

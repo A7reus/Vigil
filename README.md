@@ -10,6 +10,7 @@ Answers the Track 01 test: **What happened? Why is it risky? What should upay do
 - **Analyst queue** — `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline + narrative, reuses cached causal features), `POST /decision` (feedback loop for retrain).
 - **Analyst console** — no-build static frontend in `/web` served at `GET /`: risk queue with level filter + search, case detail with EN/BN narrative + timeline + decision buttons, and a `POST /score` playground.
 - **Evaluation** — `python -m eval.evaluate`: Precision@100, Recall@5%FPR, AUC vs rule baseline, p95 latency, fairness FPR by district/account-age, business simulation (loss prevented, analyst-minutes saved). Batched scoring (~2s for 8k rows vs ~100s before).
+- **Cross-dataset check** — same pipeline on PaySim MFS data (`eval/paysim_adapter.py`, offline): AUC 0.90 vs rules 0.50 with our best signals unavailable. See `docs/paysim-validation.md`.
 
 ## Technology stack
 Python 3.12+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib.
@@ -84,6 +85,7 @@ python -m eval.evaluate --sample 20000      # offline metrics + fairness + busin
 - `docs/security.md` — privacy, explainability, fairness, prompt-injection, oversight
 - `docs/onsite-runbook.md` — final-day playbook (triage → commit → demo)
 - `docs/eval-sample.json` — reference 50k eval output (model vs baseline + fairness + business)
+- `docs/paysim-validation.md` + `docs/paysim-eval.json` — independent check on foreign MFS data
 
 ## Project structure
 ```
