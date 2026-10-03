@@ -13,6 +13,8 @@ joblib==1.6.0
 python-dateutil==2.9.0.post0
 pytest==9.1.1
 httpx==0.28.1
+# starlette 1.7 TestClient prefers httpx2 (falls back to httpx with a deprecation warning)
+httpx2==2.13.1
 
 # ML engine: XGBoost is the primary classifier (best metrics, SHAP-native).
 xgboost==3.4.1
