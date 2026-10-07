@@ -13,7 +13,42 @@ python -m eval.paysim_adapter --in /tmp/paysim/PS_20174392719_1491204439457_log.
 python -m models.train --data /tmp/paysim_vigil --artifacts /tmp/paysim_art
 python -m eval.evaluate --data /tmp/paysim_vigil --artifacts /tmp/paysim_art --out docs/paysim-eval.json
 ```
-Same model code, same metrics, no tuning. Adapter contract: `tests/test_paysim.py`.
+Same model code, same metrics, no tuning — this is *pipeline portability*
+(retrained weights), distinct from the frozen-model zero-shot above.
+
+## Frozen-model zero-shot: does the *model* generalize, or only the pipeline?
+
+Retraining answers "does our code work elsewhere". This answers the harder
+question with zero refit — frozen weights + frozen anomaly calibration score
+a feed the model never saw (`eval/zeroshot.py`; no `models.train` anywhere):
+
+```bash
+# portable weights (no device/location/reset signals)
+python -m models.train --data data --artifacts artifacts_intersect --feature-set intersect
+# foreign feed: fresh generator run, unseen seed + different fraud mix
+python -m data_gen.generate --seed 7 --fraud-rate 0.06 --out /tmp/foreign
+# frozen scoring (intersect AND full weights)
+python -m eval.zeroshot --data /tmp/foreign --artifacts artifacts_intersect --out /tmp/zs-intersect.json
+python -m eval.zeroshot --data /tmp/foreign --artifacts artifacts --out /tmp/zs-full.json
+# foreign generator: adapted PaySim (needs the Kaggle CSV, same adapter)
+python -m eval.zeroshot --data /tmp/paysim_vigil --artifacts artifacts_intersect --out docs/paysim-zeroshot.json
+```
+
+Executed 2026-10-07 (source: seed-42 50k run; foreign: seed-7 40k run, 6% fraud):
+
+| Setup | AUC | Recall@5%FPR | Frozen 0.60 band (P/R) | Frozen 0.85 band (P/R) |
+|---|---|---|---|---|
+| In-domain (ours→ours, full) | 0.999 | 0.990 | — | — |
+| Zero-shot full weights → foreign | **0.996** | **0.990** | 0.95 / 0.96 | 0.98 / 0.93 |
+| Zero-shot intersect → foreign | **0.984** | **0.966** | 0.92 / 0.91 | 0.97 / 0.85 |
+| Retrained → PaySim (below) | 0.899 | 0.629 | — | — |
+| Zero-shot intersect → PaySim | pending CSV — command above | | | |
+
+Read: frozen weights hold up across distributions, and the operating bands
+transfer (a Medium flag still means ~0.92+ precision on unseen data). The
+intersect variant exists for feeds missing our device/location/reset signals;
+where those exist, full weights transfer best. Simulator-to-simulator is
+mechanism-generality evidence, not real-world proof — stated as such.
 
 ## Results (`docs/paysim-eval.json`, 108k adapted rows, all 8,213 frauds kept)
 | Metric | Model | Rule baseline |

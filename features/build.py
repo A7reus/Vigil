@@ -21,6 +21,14 @@ FEATURE_COLS = [
 
 ROUND_AMOUNTS = {9900, 19500, 19900, 29500, 49500, 49900, 99000}
 
+# Signals unavailable outside our schema. PaySim (and any foreign MFS feed)
+# has no per-device registry, no district trail, and no reset flags, so these
+# read 0 there. Everything else is computable in any schema with sender,
+# receiver, amount, type/channel, and timestamp — that subset is what portable
+# (zero-shot) models train on.
+PORTABLE_EXCLUDED = {"new_device", "location_jump", "location_new", "password_reset_flag"}
+INTERSECT_COLS = [c for c in FEATURE_COLS if c not in PORTABLE_EXCLUDED]
+
 
 def _parse_ts(s: str) -> datetime:
     return datetime.fromisoformat(s)

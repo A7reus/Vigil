@@ -10,7 +10,7 @@ Answers the Track 01 test: **What happened? Why is it risky? What should upay do
 - **Analyst queue**: `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline plus narrative, reusing the exact cached causal features), `POST /decision` (feedback loop for retraining).
 - **Analyst console**: a static frontend in `/web` with no build step, served at `GET /`: a risk queue with level filter and search, case detail with English/Bangla narrative plus timeline plus decision buttons, and a `POST /score` playground.
 - **Evaluation**: `python -m eval.evaluate` reports Precision@100, Recall@5%FPR, AUC against a rule baseline, p95 latency, fairness (FPR by district and account age), and a business simulation (loss prevented, analyst minutes saved). Batched scoring handles 8k rows in about 2s, down from about 100s.
-- **Cross-dataset check**: the same pipeline on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules, with our best signals unavailable. See `docs/paysim-validation.md`.
+- **Cross-dataset check**: the same pipeline on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules, with our best signals unavailable — and **frozen weights transfer**: same-artifact zero-shot scoring (`eval/zeroshot.py`) holds AUC 0.98+ on an unseen feed with operating bands intact. See `docs/paysim-validation.md`.
 
 ## Technology stack
 Python 3.12+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib.
