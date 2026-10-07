@@ -71,6 +71,24 @@ def test_batch_online_feature_parity(tmp_path):
     print(f"\nparity checked {checked} values, worst rel diff {worst:.2e}")
 
 
+def test_trim_rebuilds_rolling_state(tmp_path, monkeypatch):
+    """Past MAX_HISTORY, evicted events must stop influencing features."""
+    import api.store as store_mod
+    from api.store import HistoryStore
+    monkeypatch.setattr(store_mod, "MAX_HISTORY", 6)
+    s = HistoryStore(tmp_path)  # empty history
+    for i in range(8):
+        s.append({"txn_id": f"T{i}", "sender": "A", "receiver": f"R{i}", "amount": 100.0,
+                  "type": "P2P", "timestamp": f"2026-08-10T10:{i:02d}:00",
+                  "device_id": "D", "location": "Dhaka", "channel": "app"})
+    assert len(s.txns) == 6  # trimmed
+    f = s.featurize({"sender_id": "A", "receiver_id": "RZ", "amount": 100.0,
+                     "channel": "app", "device_id": "D", "location": "Dhaka",
+                     "timestamp": "2026-08-10T10:08:00", "type": "P2P"})
+    # Only the 6 surviving rows count (all within 1h of 10:08).
+    assert f["sender_cnt_24h"] == 6 and f["sender_sum_24h"] == 600.0
+
+
 def test_batch_online_exact_on_handcrafted_stream(tmp_path):
     """Tiny deterministic stream where every window can be hand-verified."""
     import pandas as pd

@@ -1,7 +1,9 @@
 """In-memory history store: preloaded CSV history + newly scored txns.
 
-Featurizes a single incoming txn by scanning history with vectorized pandas
-filters (1h/24h windows). History capped to last N rows for p95 latency.
+Featurize runs on per-sender / per-receiver rolling event lists, so cost is
+proportional to one wallet's activity, not history size (the old full-frame
+scan grew with all 60k rows). Semantics match features.build exactly —
+see tests/test_parity.py, which must stay green after any change here.
 """
 from __future__ import annotations
 
@@ -48,20 +50,46 @@ class HistoryStore:
             self.seen_loc[r["sender"]].add(r["location"])
         self.decisions: list[dict] = []
         self.live_rows: list[dict] = []
+        # Rolling scoring state (item 3): per-sender (ts, amount) events plus
+        # all-time sum/count/max for the average and idle-time features;
+        # per-receiver (ts, sender) events for the fan-in features.
+        self.send_evts: dict[str, list] = {}
+        self.send_total: dict[str, list] = {}
+        self.send_max: dict[str, datetime] = {}
+        self.recv_evts: dict[str, list] = {}
+        for _, r in self.txns.iterrows():
+            self._ingest(r["sender"], r["receiver"], r["__ts"], float(r["amount"]))
+
+    def _ingest(self, sender, receiver, ts, amount: float):
+        if isinstance(ts, pd.Timestamp):
+            ts = ts.to_pydatetime()
+        ev = self.send_evts.setdefault(sender, [])
+        ev.append((ts, amount))
+        tot = self.send_total.setdefault(sender, [0.0, 0])
+        tot[0] += amount
+        tot[1] += 1
+        if sender not in self.send_max or ts > self.send_max[sender]:
+            self.send_max[sender] = ts
+        self.recv_evts.setdefault(receiver, []).append((ts, sender))
 
     def featurize(self, txn: dict) -> dict:
         ts = datetime.fromisoformat(txn["timestamp"])
         s = txn["sender_id"]
-        hist = self.txns[self.txns.sender == s]
-        if len(hist):
-            h_ts = hist["__ts"]
-            m1 = hist[h_ts > (ts - pd.Timedelta(hours=1))]
-            m24 = hist[h_ts > (ts - pd.Timedelta(days=1))]
-            cnt_1h, sum_1h = len(m1), float(m1.amount.sum())
-            cnt_24, sum_24 = len(m24), float(m24.amount.sum())
-            last = h_ts.max()
-            tsl = (ts - last.to_pydatetime()).total_seconds() / 60 if pd.notna(last) else 24 * 60.0
-            avg = float(hist.amount.mean())
+        if s in self.send_total and self.send_total[s][1] > 0:
+            cnt_1h = cnt_24 = 0
+            sum_1h = sum_24 = 0.0
+            for t, a in self.send_evts[s]:
+                dt = (ts - t).total_seconds()
+                if dt < 3600:
+                    cnt_1h += 1
+                    sum_1h += a
+                if dt < 24 * 3600:
+                    cnt_24 += 1
+                    sum_24 += a
+            last = self.send_max[s]
+            tsl = (ts - last).total_seconds() / 60
+            tsum, tcnt = self.send_total[s]
+            avg = tsum / tcnt
         else:
             cnt_1h = cnt_24 = 0
             sum_1h = sum_24 = 0.0
@@ -69,9 +97,12 @@ class HistoryStore:
             avg = float(txn["amount"])
         amt = float(txn["amount"])
         hour = ts.hour
-        rh = self.txns[(self.txns.receiver == txn["receiver_id"]) & (self.txns["__ts"] > (ts - pd.Timedelta(hours=1)))]
-        recv_cnt = len(rh)
-        recv_senders = int(rh.sender.nunique()) if len(rh) else 0
+        recv_cnt, senders_1h = 0, set()
+        for t, snd in self.recv_evts.get(txn["receiver_id"], ()):
+            if (ts - t).total_seconds() < 3600:
+                recv_cnt += 1
+                senders_1h.add(snd)
+        recv_senders = len(senders_1h)
         reg = self.registry.get(s, set())
         cinfo = self.cust.get(s, {})
         home = cinfo.get("district", txn.get("location", "Dhaka"))
@@ -103,10 +134,22 @@ class HistoryStore:
         """Committed history ingestion (updates scoring state)."""
         row = pd.DataFrame([txn_row])
         row["__ts"] = pd.to_datetime(row["timestamp"])
-        self.txns = pd.concat([self.txns, row], ignore_index=True).tail(MAX_HISTORY)
+        self.txns = pd.concat([self.txns, row], ignore_index=True)
+        self._ingest(txn_row["sender"], txn_row["receiver"],
+                     row["__ts"].iloc[0], float(txn_row["amount"]))
+        if len(self.txns) > MAX_HISTORY:
+            # Trim rarely (not per row) and rebuild rolling lists from the
+            # surviving window so evicted events stop influencing features.
+            self.txns = self.txns.tail(MAX_HISTORY).reset_index(drop=True)
+            self._rebuild_rolling()
         self.seen_recv[txn_row["sender"]].add(txn_row["receiver"])
         self.seen_dev[txn_row["sender"]].add(txn_row["device_id"])
         self.seen_loc[txn_row["sender"]].add(txn_row["location"])
+
+    def _rebuild_rolling(self):
+        self.send_evts, self.send_total, self.send_max, self.recv_evts = {}, {}, {}, {}
+        for _, r in self.txns.iterrows():
+            self._ingest(r["sender"], r["receiver"], r["__ts"], float(r["amount"]))
 
     def append_live(self, txn_row: dict):
         """Unreviewed /score traffic: visible in timelines only, scoring-neutral."""
