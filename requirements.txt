@@ -26,6 +26,6 @@ shap==0.52.0
 # training — kept for experiments, HGB from scikit-learn remains the zero-extra-dep fallback).
 lightgbm==4.7.0
 
-# Pilot hosting: Postgres audit log when DATABASE_URL is set (Render free PG
-# covers judging; SQLite stays the offline default). Binary wheel, no server needed.
+# Pilot hosting: Postgres decision audit log (DATABASE_URL, required).
+# Binary wheel, no server needed locally beyond a throwaway container.
 psycopg[binary]==3.3.6

@@ -58,7 +58,8 @@ async def lifespan(app: FastAPI):
             "then start the API."
         ) from e
     store = HistoryStore()
-    # Audit trail lives in SQLite and survives restarts (phase-1 list did not).
+    # Audit trail lives in Postgres (DATABASE_URL required — fail fast here,
+    # not mid-demo). Replaces the phase-1 process-local list.
     decision_log = DecisionLog()
     if len(store.txns) == 0:
         log.warning("no transaction history found in data/ — queue will be empty until data is generated")

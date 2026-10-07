@@ -8,6 +8,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vigil
+          POSTGRES_PASSWORD: vigil
+          POSTGRES_DB: vigil
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vigil"
+          --health-interval 5s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://vigil:vigil@localhost:5432/vigil
+      TEST_POSTGRES_URL: postgresql://vigil:vigil@localhost:5432/vigil
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

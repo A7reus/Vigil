@@ -1,5 +1,14 @@
-"""Decision audit log: upsert contract + restart persistence (SQLite)."""
-from api.decisions import DecisionLog
+"""Decision audit log: Postgres contract (upsert flag, count, persistence)."""
+import os
+
+import pytest
+
+from api.decisions import DecisionLog, database_url
+
+needs_pg = pytest.mark.skipif(
+    not os.getenv("TEST_POSTGRES_URL"),
+    reason="needs TEST_POSTGRES_URL pointing at a throwaway database",
+)
 
 
 def _entry(txn="T1", analyst="a1", decision="step-up"):
@@ -7,8 +16,22 @@ def _entry(txn="T1", analyst="a1", decision="step-up"):
             "note": "", "at": "2026-08-15T12:00:00+00:00"}
 
 
-def test_upsert_returns_updated_flag(tmp_path):
-    log = DecisionLog(tmp_path / "d.db")
+@pytest.fixture
+def log():
+    lg = DecisionLog(url=os.environ["TEST_POSTGRES_URL"])
+    lg._db.execute("TRUNCATE decisions")
+    return lg
+
+
+def test_database_url_required(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        database_url()
+    assert database_url("postgresql://x") == "postgresql://x"
+
+
+@needs_pg
+def test_upsert_returns_updated_flag(log):
     assert log.upsert(_entry()) is False
     assert log.upsert(_entry()) is True  # same analyst+txn overwrites
     assert len(log) == 1
@@ -16,42 +39,9 @@ def test_upsert_returns_updated_flag(tmp_path):
     assert len(log) == 2
 
 
-def test_log_survives_reopen(tmp_path):
-    path = tmp_path / "d.db"
-    DecisionLog(path).upsert(_entry())
-    reopened = DecisionLog(path)
-    assert len(reopened) == 1
-    assert reopened.all()[0]["txn_id"] == "T1"
-
-
-def test_default_path_follows_env(tmp_path, monkeypatch):
-    from api import decisions
-    monkeypatch.setenv("VIGIL_DECISIONS_DB", str(tmp_path / "custom.db"))
-    assert decisions.default_db_path() == tmp_path / "custom.db"
-
-
-def test_backend_selection(monkeypatch, tmp_path):
-    from api.decisions import select_backend
-    assert select_backend(tmp_path / "a.db", "") == "sqlite"
-    assert select_backend(None, "postgresql://u:p@host/db") == "pg"
-    # Explicit file still wins (offline venue over env leftovers).
-    assert select_backend(tmp_path / "b.db", "postgresql://u:p@host/db") == "sqlite"
-
-
-_live_pg = __import__("pytest").mark.skipif(
-    not __import__("os").getenv("TEST_POSTGRES_URL"),
-    reason="needs TEST_POSTGRES_URL pointing at a throwaway database",
-)
-
-
-@_live_pg
-def test_postgres_parity():
-    """Same contract, real Postgres: upsert flag, count, reopen persistence."""
-    import os
-    from api.decisions import DecisionLog
+@needs_pg
+def test_log_survives_reopen():
     url = os.environ["TEST_POSTGRES_URL"]
-    log = DecisionLog(url=url)
-    log._db.execute("TRUNCATE decisions")
-    assert log.upsert(_entry()) is False
-    assert log.upsert(_entry()) is True
-    assert len(DecisionLog(url=url)) == 1
+    DecisionLog(url=url).upsert(_entry(txn="REOPEN-1"))
+    reopened = DecisionLog(url=url)
+    assert any(r["txn_id"] == "REOPEN-1" for r in reopened.all())

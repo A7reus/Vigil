@@ -43,8 +43,7 @@ environment variables take precedence over the file.
 | `OLLAMA_MODEL` | Small local instruction model with usable Bangla | `qwen2.5:3b` |
 | `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
 | `VIGIL_API_KEY` | Shared secret for writes (empty = open demo; set = `X-API-Key` required) | `` (empty) |
-| `VIGIL_DECISIONS_DB` | Analyst decision audit log, SQLite side (git-ignored, venue default) | `data/decisions.db` |
-| `DATABASE_URL` | Set = decisions go to Postgres instead (hosted Render; free PG covers judging) | `` (empty) |
+| `DATABASE_URL` | Postgres for the decision audit log — required, API refuses to boot without it | `postgresql://vigil:vigil@localhost:5432/vigil` |
 | `VIGIL_ALERT_WINDOW` | Recent rows scored to fill the queue; top risks kept | `2000` |
 | `VIGIL_RATE_LIMIT_PER_MIN` | Per-IP writes/min on `/score` + `/decision` (`0` disables) | `120` |
 
