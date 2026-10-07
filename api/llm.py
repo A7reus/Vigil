@@ -74,9 +74,13 @@ def _payload(model: str, prompt: str) -> dict:
             {"role": "user", "content": prompt},
         ],
         # 0.0: template-filling is deterministic work; sampling only adds
-        # flaky empties. 1024, not 400: small models spend tokens on
-        # chain-of-thought first; a tight cap ends turns empty.
-        "options": {"temperature": 0.0, "num_predict": 1024},
+        # flaky empties. num_predict caps the ramble: the template needs ~150
+        # tokens, and CPU inference is seconds per hundred — tune via
+        # OLLAMA_NUM_PREDICT if the box is faster. keep_alive holds the model
+        # resident through a demo so every call isn't a cold load.
+        "options": {"temperature": 0.0,
+                    "num_predict": int(os.getenv("OLLAMA_NUM_PREDICT", "320")),
+                    "keep_alive": "30m"},
         "stream": False,
     }
 
@@ -103,15 +107,30 @@ def _call_llm(prompt: str) -> str | None:
     return text.strip() or None
 
 
-def narrate(txn: dict, feats: dict, score_out: dict, graph_facts: dict, lang: str = "en") -> dict:
+def narrate(txn: dict, feats: dict, score_out: dict, graph_facts: dict,
+            lang: str = "en", live: bool = True) -> dict:
+    """Template narrative always; live local-model rewrite only when asked.
+
+    Scoring (`/score`) passes live=False: it must answer in milliseconds and
+    the curated template bullets beat a 3B paraphrase anyway. Case review
+    (`/case`) passes live=True: one analyst waiting ~9s for a fuller
+    investigation write-up is a fair trade, and fallback covers daemon-down.
+    """
     ev = build_evidence(txn, feats, score_out, graph_facts)
     template = TEMPLATE_BN if lang == "bn" else TEMPLATE_EN
     fallback = template.format(**ev)
-    evidence_json = json.dumps({"txn": txn, "features": feats,
-                                "score": score_out, "graph": graph_facts}, default=str)
-    prompt = (f"Write the case summary using EXACTLY this template:\n{template}\n\n"
-              f"Fill it using ONLY this evidence JSON:\n{evidence_json}\n"
-              f"Values: sender={ev['sender']} receiver={ev['receiver']} amount={ev['amount']}.")
+    if not live:
+        return {"narrative": fallback, "llm_used": False,
+                "template": "offline-fallback", "lang": lang}
+    values = (f"sender={ev['sender']} receiver={ev['receiver']} "
+              f"amount={ev['amount']} channel={ev['channel']} "
+              f"timestamp={ev['timestamp']} score={ev['score']} level={ev['level']} "
+              f"action={ev['action']} conf={ev['conf']}\n"
+              f"bullets:\n{ev['bullets']}\nwhy: {ev['why']}")
+    prompt = (f"Fill the template below with these values. Output ONLY the "
+              f"filled template — no JSON, no extra sections. Copy every value "
+              f"character-for-character; do not reformat numbers.\n\n"
+              f"TEMPLATE:\n{template}\n\nVALUES:\n{values}")
     llm_text = _call_llm(prompt)
     return {"narrative": llm_text or fallback, "llm_used": bool(llm_text),
             "template": "llm-grounded" if llm_text else "offline-fallback", "lang": lang}

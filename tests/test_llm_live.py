@@ -58,7 +58,10 @@ def test_live_narrative_grounded_in_evidence():
          "top_3_reasons": ["new device not seen for this sender"]},
         {"boost": 0.15, "fraud_neighbors_2hop": 4}, lang="en")
     assert out["llm_used"] is True, "expected live text, got fallback"
-    assert "What happened" in out["narrative"] and "45,000" in out["narrative"]
+    # Small models may reformat the amount (45,000 vs 45000.00) — the template
+    # heading must hold and the digits must still match.
+    assert "What happened" in out["narrative"], out["narrative"]
+    assert "45,000" in out["narrative"] or "45000" in out["narrative"], out["narrative"]
 
 
 @live

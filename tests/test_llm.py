@@ -150,5 +150,6 @@ def test_prompt_carries_system_guard_and_evidence(monkeypatch):
     llm.narrate({"sender_id": "C1", "receiver_id": "C2", "amount": 1,
                  "channel": "app", "timestamp": "t"},
                 _feats(), _score(), {"boost": 0.15, "fraud_neighbors_2hop": 4})
-    assert "EXACTLY this template" in prompts[0] and "evidence JSON" in prompts[0]
+    assert "filled template" in prompts[0] and "VALUES:" in prompts[0]
+    assert "no JSON" in prompts[0]
     assert "C1" in prompts[0]

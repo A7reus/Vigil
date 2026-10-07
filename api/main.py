@@ -251,7 +251,8 @@ def score(req: ScoreRequest, request: Request):
                       boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])
     s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
     d = decide(s["risk_score"])
-    nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
+    # Scoring path: template narrative, answered in ms (see narrate docstring).
+    nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang, live=False)
     txn_id = f"LIVE-{uuid4().hex[:8]}"
     # Scoring-neutral: visible in timelines only, never moves anyone's features.
     store.append_live({"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
