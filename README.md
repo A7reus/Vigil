@@ -9,7 +9,8 @@ Answers the Track 01 test: **What happened? Why is it risky? What should upay do
 - **AI engine (4 parts)**: XGBoost classifier (HGB fallback) plus IsolationForest anomaly scores calibrated to percentiles on training data with no test leakage, plus a NetworkX 2-hop mule boost, plus a grounded LLM investigator (English/Bangla, offline fallback). Reasons combine auditable rules with per-row SHAP attributions.
 - **Analyst queue**: `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline plus narrative, reusing the exact cached causal features), `POST /decision` (feedback loop for retraining).
 - **Analyst console**: a static frontend in `/web` with no build step, served at `GET /`: a risk queue with level filter and search, case detail with English/Bangla narrative plus timeline plus decision buttons, and a `POST /score` playground.
-- **Evaluation**: `python -m eval.evaluate` reports Precision@100, Recall@5%FPR, AUC against a rule baseline, p95 latency, fairness (FPR by district and account age), and a business simulation (loss prevented, analyst minutes saved). Batched scoring handles 8k rows in about 2s, down from about 100s.
+- **Access control**: password login with revocable tokens; registration stays pending until an admin approves. Analysts get the console; admins get a dashboard for approvals, users, all reviews, and case assignment. Authenticated scoring can commit reviewed traffic into history (`?commit=true`); analysts are attributed from their login, never from a form field.
+- **Evaluation**: `python -m eval.evaluate` reports Precision@100, Recall@5%FPR, AUC against a rule baseline, p95 latency, fairness (FPR by district, age group, and account age), and a business simulation (loss prevented, analyst minutes saved). Batched scoring handles 8k rows in about 2s, down from about 100s.
 - **Cross-dataset check**: the same pipeline on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules, with our best signals unavailable. See `docs/paysim-validation.md`.
 
 ## Technology stack
@@ -44,6 +45,12 @@ environment variables take precedence over the file.
 | `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
 | `VIGIL_ALERT_WINDOW` | Recent rows scored to fill the queue; top risks kept | `2000` |
 | `VIGIL_RATE_LIMIT_PER_MIN` | Per-IP writes/min on `/score` + `/decision` (`0` disables) | `120` |
+| `VIGIL_DB_PATH` | SQLite file for users, cases, decisions | `vigil.db` |
+| `VIGIL_SEED_DEMO` | Seed demo accounts on empty DB (`0` disables; do so in production) | `1` |
+| `VIGIL_TOKEN_DAYS` | Login session lifetime in days | `30` |
+| `VIGIL_TRUST_PROXY` | Honor `X-Forwarded-For` for rate buckets (needed behind proxies) | `1` |
+| `VIGIL_LOG_JSON` | JSON log lines for aggregators | `0` |
+| `VIGIL_LLM_TIMEOUT` | Provider timeout in seconds for live narratives | `15` |
 
 ## Run and build commands
 ```bash
@@ -56,16 +63,29 @@ curl -X POST localhost:8000/score -H 'Content-Type: application/json' -d \
 # queue / case / feedback
 curl 'localhost:8000/alerts?limit=5'; curl localhost:8000/case/T0000100
 curl -X POST localhost:8000/decision -H 'Content-Type: application/json' -d '{"txn_id":"T0000100","decision":"step-up"}'
+# authenticated score that joins committed history (analyst or admin login first)
+TOKEN=$(curl -s -X POST localhost:8000/auth/login -H 'Content-Type: application/json' -d '{"username":"analyst","password":"analyst123"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
+curl -X POST 'localhost:8000/score?commit=true' -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"sender_id":"C000001","receiver_id":"C000002","amount":45000,"channel":"app","device_id":"DX999","location":"Dhaka","timestamp":"2026-08-15T23:10:00","type":"P2P"}'
 python -m eval.evaluate --data data --artifacts artifacts
 python -m scripts.run_demo              # 4k-txn end-to-end: generate → train → normal vs scam
 ```
+
+## Access control
+Demo accounts are seeded into an empty database on startup:
+`admin/admin123` (admin) and `analyst/analyst123` (analyst). New
+registrations stay **pending** until an admin approves them
+(`Admin dashboard → Pending approvals`, or `POST /admin/users/{id}/approve`).
+Analysts use the console; admins additionally manage users, review every
+submitted decision, and assign/close cases. Set `VIGIL_SEED_DEMO=0` in
+production and create real accounts. Decisions are always attributed to the
+logged-in user; the `analyst` form field is only a fallback for anonymous use.
 
 ## Live deployment URL
 `https://vigil-qna5.onrender.com/` (API plus analyst console at `/`; interactive docs at `/docs`). Free-tier hosting sleeps when idle, so the first visit after a pause takes about a minute to wake. Local fallback: follow Run commands + video.
 
 ## Testing instructions
 ```bash
-pytest -q                                   # 47 tests + 3 live-gated (need a key): smoke, API, security, LLM (mocked), intensive, paysim (needs data/ + artifacts/)
+pytest -q                                   # 79 tests + 3 live-gated (need a key): smoke, API, security, LLM (mocked), intensive, paysim, auth, RBAC, parity (needs data/ + artifacts/)
 python -m eval.evaluate --sample 20000      # offline metrics + fairness + business sim
 # API verify: /health -> {"ok": true}; /score latency_ms should be <200 p95 locally
 # Frontend verify: GET / -> 200 text/html; queue + case + playground in browser
@@ -76,7 +96,7 @@ python -m eval.evaluate --sample 20000      # offline metrics + fairness + busin
 - `api/llm.py: TEMPLATE_EN/BN`: the prompt lives outside decision logic; toggle with `lang: en|bn`.
 - `data/` + `artifacts/` are regenerable and git-ignored. Clean test split: last 20% by timestamp, never trained on. `artifacts/anomaly_calib.npy` is the train-only anomaly calibration (regenerated on retrain).
 - Synthetic-data assumptions documented in `data_gen/generate.py` header, including hardened noise (legit new-device/night/round-amount/reset/fan-in + fraud overlap). All amounts in BDT (৳).
-- Ops: `GET /health` (queue/startup info), `GET /metrics` (requests, decisions, startup). Structured logs via stdlib `logging`.
+- Ops: `GET /health` (liveness), `GET /ready` (readiness probe, 503 when not servable), `GET /metrics` + `/metrics/prom` (counters, latency, LLM mix). Structured logs via stdlib `logging` (`VIGIL_LOG_JSON=1` for JSON). Run a single uvicorn worker: rate buckets, live cases, and ops counters are per-process.
 - Security: open CORS is demo-only (see comment in `api/main.py`); restrict before prod. See `docs/security.md`.
 
 ## Docs
@@ -87,13 +107,17 @@ python -m eval.evaluate --sample 20000      # offline metrics + fairness + busin
 - `docs/onsite-runbook.md`: final-day playbook (triage, then commit, then demo)
 - `docs/eval-sample.json`: reference 50k eval output (model vs baseline plus fairness plus business)
 - `docs/paysim-validation.md` + `docs/paysim-eval.json`: independent check on foreign MFS data
+- `docs/shadow-mode.md`: the go-live path (backtest, live shadow, gradual enforcement)
+- `docs/integration.md`: auth flows, curl examples, SQLite schema contract, runbook, threat sketch
+- `docs/pilot-backlog.md`: held-out-pattern test, label delay, challenger loop, deferred infra
 
 ## Project structure
 Output of `tree -I '.git|__pycache__|data|artifacts|report.*'` (generated
 `data/`, `artifacts/`, and TeX build files omitted):
 ```
 .
-├── api                  FastAPI service: main (routes/mounts), store, rules, llm, schemas
+├── api                  FastAPI service: main (routes/mounts), store, rules, llm, schemas,
+│                        db (SQLite users/cases/decisions), auth (passwords, tokens, RBAC)
 ├── config               thresholds.yaml, tunable on-site with no ML retrain
 ├── data_gen             synthetic customers/devices/transactions (hardened, overlapping)
 ├── docs                 logic-chain, data-dictionary, scale-plan, security, runbook,
@@ -109,7 +133,10 @@ Output of `tree -I '.git|__pycache__|data|artifacts|report.*'` (generated
 ├── tests                test_smoke (rules, fallback, features), test_api (endpoints),
 │                        test_security (fuzz regressions), test_llm (mocked investigator),
 │                        test_llm_live (real provider, gated), test_intensive (eval math,
-│                        graph, causality), test_paysim (adapter contract)
+│                        graph, causality), test_paysim (adapter contract),
+│                        test_auth (passwords, users, sessions), test_rbac (roles,
+│                        approvals, commit flag, case workflow), test_parity (batch
+│                        vs online features)
 ├── web                  analyst console: index.html, app.js, styles.css, favicon (no build step)
 ├── .env.example         copy to .env; all runtime variables with placeholders
 ├── .python-version      pins Python 3.14 for hosts like Render

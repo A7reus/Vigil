@@ -115,6 +115,7 @@ def main():
                           "precision@100": round(precision_at_k(y, rules), 4),
                           "recall@5%FPR": round(recall_at_fpr(y, rules), 4)},
         "fairness_FPR@sweep": {"district": fpr_by("district") if "district" in te else {},
+                               "age_group": fpr_by("age_group") if "age_group" in te else {},
                                "account_age_bucket": fpr_by("account_age_bucket")},
         "business": business_sim(te, scores, cfg),
         "eval_latency_total_s": round(time.perf_counter() - t0, 1),
