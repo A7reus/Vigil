@@ -33,11 +33,10 @@ before any enforcement; never auto-tune on unreviewed labels.
   0 disables; 429 JSON), (c) strict input bounds (lengths, timestamp range,
   finite JSON enforced by middleware). Add API keys before any pilot.
 - Ground truth: `/alerts` and `/case` never expose training labels.
-- Decisions: unknown `txn_id` → 404; same analyst+txn upserts instead of
-  duplicating; notes capped at 500 chars.
-- Ground truth: `/alerts` and `/case` never expose training labels.
-- Decisions: unknown `txn_id` → 404; same analyst+txn upserts instead of
-  duplicating; notes capped at 500 chars.
+- Decisions persist in SQLite (`VIGIL_DECISIONS_DB`, default
+  `data/decisions.db`): unknown `txn_id` → 404; same analyst+txn upserts
+  instead of duplicating; notes capped at 500 chars; the log survives restarts
+  and feeds the retrain queue (`pending_retrain`).
 - Prompt injection: raw fields are sanitized (`_safe()` strips control chars,
   caps at 120) before prompts/narratives, and the system instruction treats
   evidence values as untrusted data. High-impact actions still require analyst

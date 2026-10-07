@@ -89,12 +89,18 @@ def test_no_label_leakage(client):
 @needs_stack
 def test_decision_upsert_and_unknown_404(client):
     # Finding 6: unknown ids 404; duplicates upsert instead of piling up.
+    # Unique analyst: the log persists across runs, so a fixed name would
+    # turn the first insert into an update on repeat runs.
+    from uuid import uuid4
+    analyst = f"fuzz-{uuid4().hex[:8]}"
     assert client.post("/decision", json={"txn_id": "TOTALLY-MADE-UP",
                                           "decision": "freeze"}).status_code == 404
     tid = client.get("/alerts?limit=1").json()["alerts"][0]["txn_id"]
     n0 = client.get("/metrics").json()["decisions_logged"]
-    assert client.post("/decision", json={"txn_id": tid, "decision": "freeze"}).status_code == 200
-    r = client.post("/decision", json={"txn_id": tid, "decision": "freeze"}).json()
+    assert client.post("/decision", json={"txn_id": tid, "decision": "freeze",
+                                          "analyst": analyst}).status_code == 200
+    r = client.post("/decision", json={"txn_id": tid, "decision": "freeze",
+                                       "analyst": analyst}).json()
     assert r["updated"] is True
     assert client.get("/metrics").json()["decisions_logged"] == n0 + 1
 

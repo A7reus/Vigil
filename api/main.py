@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api.decisions import DecisionLog
 from api.llm import narrate
 from api.rules import decide, get_config
 from api.schemas import DecisionRequest, ScoreRequest
@@ -39,11 +40,12 @@ fraud_set: set = set()
 alert_cache: list[dict] = []
 startup_info: dict = {}
 request_count: int = 0
+decision_log: DecisionLog | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, graph, fraud_set, alert_cache, startup_info
+    global store, graph, fraud_set, alert_cache, startup_info, decision_log
     t0 = time.perf_counter()
     get_config()
     try:
@@ -56,6 +58,8 @@ async def lifespan(app: FastAPI):
             "then start the API."
         ) from e
     store = HistoryStore()
+    # Audit trail lives in SQLite and survives restarts (phase-1 list did not).
+    decision_log = DecisionLog()
     if len(store.txns) == 0:
         log.warning("no transaction history found in data/ — queue will be empty until data is generated")
     tx = store.txns
@@ -184,7 +188,7 @@ def health():
 def metrics():
     """Lightweight ops counters (monitoring expectation in the guideline)."""
     return {"requests_scored": request_count, "queue_size": len(alert_cache),
-            "decisions_logged": 0 if store is None else len(store.decisions),
+            "decisions_logged": 0 if decision_log is None else len(decision_log),
             "startup": startup_info}
 
 
@@ -314,23 +318,16 @@ def case(txn_id: str, lang: str = "en"):
 
 @app.post("/decision")
 def decision(req: DecisionRequest, request: Request):
-    assert store is not None
+    assert store is not None and decision_log is not None
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
     entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()}
-    updated = False
-    for i, d in enumerate(store.decisions):
-        if d.get("txn_id") == req.txn_id and d.get("analyst") == req.analyst:
-            store.decisions[i] = entry
-            updated = True
-            break
-    if not updated:
-        store.decisions.append(entry)
+    updated = decision_log.upsert(entry)
     log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, req.analyst, updated)
     return {"ok": True, "updated": updated, "logged": req.model_dump(),
-            "pending_retrain": len(store.decisions)}
+            "pending_retrain": len(decision_log)}
 
 
 # Analyst console (no build step): served from /web. API routes above take

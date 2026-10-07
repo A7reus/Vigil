@@ -46,7 +46,6 @@ class HistoryStore:
             self.seen_recv[r["sender"]].add(r["receiver"])
             self.seen_dev[r["sender"]].add(r["device_id"])
             self.seen_loc[r["sender"]].add(r["location"])
-        self.decisions: list[dict] = []
         self.live_rows: list[dict] = []
 
     def featurize(self, txn: dict) -> dict:
