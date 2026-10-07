@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 
 TEMPLATE_EN = """What happened: {sender} sent ৳{amount:,.0f} to {receiver} via {channel} at {timestamp}.
@@ -123,7 +124,26 @@ def _call_llm(prompt: str) -> str | None:
         return None
 
 
+_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+_ID_RE = re.compile(r"[A-Za-z]{0,4}\d[\w-]*")
+
+
+def faithful(text: str, evidence_json: str) -> bool:
+    """Enforced groundedness (item 14): every number and wallet-like ID in the
+    narrative must appear in the evidence. Failure falls back to the template,
+    so this errs toward safety, never toward hallucination."""
+    norm_ev = evidence_json.replace(",", "").replace(" ", "").replace("৳", "")
+    for tok in _NUM_RE.findall(text or ""):
+        if tok.replace(",", "") not in norm_ev:
+            return False
+    for tok in _ID_RE.findall(text or ""):
+        if tok not in norm_ev and tok.replace(",", "") not in norm_ev:
+            return False
+    return True
+
+
 def narrate(txn: dict, feats: dict, score_out: dict, graph_facts: dict, lang: str = "en") -> dict:
+    import logging
     ev = build_evidence(txn, feats, score_out, graph_facts)
     template = TEMPLATE_BN if lang == "bn" else TEMPLATE_EN
     fallback = template.format(**ev)
@@ -133,5 +153,10 @@ def narrate(txn: dict, feats: dict, score_out: dict, graph_facts: dict, lang: st
               f"Fill it using ONLY this evidence JSON:\n{evidence_json}\n"
               f"Values: sender={ev['sender']} receiver={ev['receiver']} amount={ev['amount']}.")
     llm_text = _call_llm(prompt)
-    return {"narrative": llm_text or fallback, "llm_used": bool(llm_text),
-            "template": "llm-grounded" if llm_text else "offline-fallback", "lang": lang}
+    if llm_text and faithful(llm_text, evidence_json):
+        return {"narrative": llm_text, "llm_used": True, "faithful": True,
+                "template": "llm-grounded", "lang": lang}
+    if llm_text:
+        logging.getLogger("vigil").warning("LLM narrative failed faithfulness check; using template")
+    return {"narrative": fallback, "llm_used": bool(llm_text), "faithful": False,
+            "template": "llm-unfaithful-fallback" if llm_text else "offline-fallback", "lang": lang}

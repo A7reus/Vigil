@@ -144,8 +144,32 @@ def test_narrate_uses_live_text_when_available(monkeypatch):
     out = llm.narrate({"sender_id": "C1", "receiver_id": "C2", "amount": 1,
                        "channel": "app", "timestamp": "t"},
                       _feats(), _score(), {"boost": 0, "fraud_neighbors_2hop": 0})
-    assert out == {"narrative": "LIVE SUMMARY", "llm_used": True,
+    assert out == {"narrative": "LIVE SUMMARY", "llm_used": True, "faithful": True,
                    "template": "llm-grounded", "lang": "en"}
+
+
+def test_faithfulness_enforced():
+    import api.llm as llm
+    ev = '{"sender": "C1", "amount": 25000, "risk": 0.91}'
+    assert llm.faithful("C1 sent 25000 at risk 0.91", ev)
+    assert not llm.faithful("C1 sent 999999 at risk 0.91", ev)
+    assert not llm.faithful("X999 sent 25000", ev)
+    assert llm.faithful("no numbers here", ev)
+
+
+def test_unfaithful_llm_falls_back_to_template(monkeypatch):
+    import api.llm as llm
+    monkeypatch.setattr(llm, "_call_llm", lambda p: "C1 sent ৳999,999 to NOWHERE")
+    out = llm.narrate({"sender_id": "C1", "receiver_id": "C2", "amount": 25000,
+                       "channel": "app", "timestamp": "2026-08-15T23:10:00"},
+                      {"amount_vs_user_avg": 5.0, "new_device": 1, "location_jump": 1,
+                       "sender_cnt_1h": 4, "recv_n_senders_1h": 0, "location_new": 1},
+                      {"risk_score": 0.91, "risk_level": "High",
+                       "recommended_action": "review", "top_3_reasons": []},
+                      {"boost": 0, "fraud_neighbors_2hop": 0})
+    assert out["llm_used"] is True and out["faithful"] is False
+    assert out["template"] == "llm-unfaithful-fallback"
+    assert "999,999" not in out["narrative"]
 
 
 def test_prompt_carries_system_guard_and_evidence(monkeypatch):
