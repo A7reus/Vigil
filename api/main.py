@@ -178,8 +178,10 @@ async def _reject_nonfinite_json(request: Request, call_next):
     return await call_next(request)
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
+    # HEAD exists for uptime monitors (UptimeRobot pings /health that way);
+    # Starlette strips the body automatically, same 200 either way.
     return {"ok": True, "history_rows": 0 if store is None else len(store.txns),
             "graph_nodes": 0 if graph is None else graph.number_of_nodes(),
             "queue_size": len(alert_cache), "startup": startup_info}
