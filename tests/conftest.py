@@ -22,3 +22,12 @@ def _isolated_db(tmp_path_factory):
     mp.setenv("VIGIL_DB_PATH", str(tmp_path_factory.mktemp("db") / "t.db"))
     yield
     mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _offline_llm_unless_live(monkeypatch):
+    """A live key in .env must never make unit tests network-dependent.
+    Live coverage lives in tests/test_llm_live.py (double-gated)."""
+    import os
+    if os.getenv("VIGIL_LIVE_LLM_TEST") != "1":
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
