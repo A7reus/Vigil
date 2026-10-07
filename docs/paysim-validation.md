@@ -60,13 +60,33 @@ txns, seed 7, home model trained on seed 42):
 | Recall@5%FPR | **1.0000** | 0.2177 |
 
 Read honestly: same generator means a mild shift, so this is a floor for
-the method, not a ceiling for the claim. The real test is PaySim zero-shot:
+the method, not a ceiling for the claim.
+
+## The real test: frozen home model on PaySim (`docs/zeroshot-paysim.json`)
+
+Ran 2026-10-07 against the adapted PaySim above — home artifacts untouched,
+no retraining. Only graph structure comes from PaySim's train window; the
+classifier and anomaly calibration are exactly what ships in `artifacts/`:
+
+| Metric | Zero-shot model | Rule baseline |
+|---|---|---|
+| AUC | **0.6985** | 0.5009 (≈ coin flip) |
+| Recall@5%FPR | **0.5957** | 0.0 |
+| Precision@100 | 0.99 (see caveat) | — |
 
 ```bash
 python -m eval.paysim_adapter --in /tmp/paysim/PS_20174392719_1491204439457_log.csv --out /tmp/paysim_vigil
 python -m eval.zeroshot --artifacts artifacts --data /tmp/paysim_vigil --out docs/zeroshot-paysim.json
 ```
 
-That needs the PaySim CSV (Kaggle download, not vendored here). Until it
-runs, the retrained table above is labeled what it is — pipeline transfer —
-and this section is the promised stricter number, with the command ready.
+Reading these numbers honestly:
+- **0.70 is lower than the retrained 0.90, and the gap is the point.**
+  Retraining buys ~0.20 AUC on foreign soil. The frozen model still ranks
+  fraud far above random with its best signals (devices, locations, resets)
+  zeroed — it survives on amounts, velocity, type, and graph shape alone.
+- **Rules don't survive at all.** The baseline leans on device/location flags
+  that don't exist here: AUC 0.50, zero recall. On data we didn't create,
+  the ensemble beats hand-written rules whether or not it gets to retrain.
+- **Precision@100 flatters here.** Keep-all-fraud sampling plus the
+  chronological split leaves the test window 66% fraud; trust the rank-based
+  AUC/recall, not the top-100 hit rate. Same caveat as the retrained table.
