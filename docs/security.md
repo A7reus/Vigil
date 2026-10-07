@@ -2,7 +2,14 @@
 
 ## Privacy
 Synthetic-only during hackathon (`data_gen/`); no production data, no PII.
-`data/` + `artifacts/` git-ignored; secrets via env (`LLM_API_KEY`), placeholders in README.
+`data/` + `artifacts/` git-ignored; the analyst secret (if set) via env (`VIGIL_API_KEY`), placeholders in README.
+
+Case evidence never leaves the building. Narratives are written by a local
+model through Ollama (`OLLAMA_HOST` defaults to localhost; there is no remote
+endpoint to configure and no key to leak). This is deliberate: MFS case data
+cannot cross borders, so the design removes the crossing instead of guarding
+it. Daemon down just means template narratives — the offline fallback judges
+already saw, now as the everyday path rather than the exception.
 
 ## Explainability
 Every score ships `top_3_reasons` (auditable rules first, then model importance)
@@ -25,6 +32,9 @@ before any enforcement; never auto-tune on unreviewed labels.
   limiting on `/score` + `/decision` (`VIGIL_RATE_LIMIT_PER_MIN`, default 120,
   0 disables; 429 JSON), (c) strict input bounds (lengths, timestamp range,
   finite JSON enforced by middleware). Add API keys before any pilot.
+- Ground truth: `/alerts` and `/case` never expose training labels.
+- Decisions: unknown `txn_id` → 404; same analyst+txn upserts instead of
+  duplicating; notes capped at 500 chars.
 - Ground truth: `/alerts` and `/case` never expose training labels.
 - Decisions: unknown `txn_id` → 404; same analyst+txn upserts instead of
   duplicating; notes capped at 500 chars.

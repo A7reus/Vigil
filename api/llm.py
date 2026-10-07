@@ -1,10 +1,18 @@
-"""Grounded LLM investigator. Prompt receives ONLY structured JSON evidence.
+"""Grounded LLM investigator, local-only by design.
+
+The model runs on the same machine (or LAN) via Ollama — case evidence never
+leaves the building, which is the whole point for MFS data that cannot cross
+borders. There is deliberately no remote API path: no API key, no base URL,
+nothing to leak.
 
 Output template (fixed, anti-hallucination):
   What happened / Evidence (bullets with values) / Why risky / What to do + confidence
 
-If no LLM key is configured (or venue internet fails), fall back to a
-deterministic template so the demo never breaks. EN/BN toggle via `lang`.
+If Ollama is unreachable (or the venue internet fails — same thing, since we
+need neither), fall back to a deterministic template so the demo never breaks.
+EN/BN toggle via `lang`.
+
+Setup: `ollama pull qwen2.5:3b` once, then leave `ollama serve` running.
 """
 from __future__ import annotations
 
@@ -66,54 +74,33 @@ def _payload(model: str, prompt: str) -> dict:
             {"role": "user", "content": prompt},
         ],
         # 0.0: template-filling is deterministic work; sampling only adds
-        # flaky empties. 1024, not 400: reasoning models (e.g. gpt-oss) spend
-        # tokens on chain-of-thought first; a tight cap ends turns empty.
-        "temperature": 0.0, "max_tokens": 1024,
+        # flaky empties. 1024, not 400: small models spend tokens on
+        # chain-of-thought first; a tight cap ends turns empty.
+        "options": {"temperature": 0.0, "num_predict": 1024},
+        "stream": False,
     }
 
 
-def _post_httpx(base: str, api_key: str, payload: dict) -> str:
-    import httpx  # lazy: keeps API cold start fast without the dep
-
-    r = httpx.post(f"{base}/chat/completions", timeout=15,
-                   headers={"Authorization": f"Bearer {api_key}"}, json=payload)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
-
-
-def _post_urllib(base: str, api_key: str, payload: dict) -> str:
-    # Fallback for minimal installs. Custom UA required: provider edge
-    # proxies reject stdlib's default `Python-urllib/*` with 403.
+def _post_ollama(host: str, payload: dict) -> str:
+    """One chat turn against the local daemon. stdlib only, custom UA."""
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        f"{base}/chat/completions", data=data,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-                 "User-Agent": "Vigil/0.1"})
-    with urllib.request.urlopen(req, timeout=15) as r:
+        f"{host}/api/chat", data=data,
+        headers={"Content-Type": "application/json", "User-Agent": "Vigil/0.1"})
+    with urllib.request.urlopen(req, timeout=60) as r:
         out = json.loads(r.read().decode())
-    return out["choices"][0]["message"]["content"]
+    return out["message"]["content"]
 
 
 def _call_llm(prompt: str) -> str | None:
-    """Optional Groq/OpenAI-compatible call. Returns None on any failure -> fallback."""
-    api_key = os.getenv("LLM_API_KEY", "")
-    base = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-    # Default follows Groq's replacement for the Aug-2026 shutdown of
-    # llama-3.1-8b-instant. Override per-env; see tests/test_llm_live.py.
-    model = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
-    if not api_key:
-        return None
-    payload = _payload(model, prompt)
+    """Optional local call. Returns None on any failure -> template fallback."""
+    host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
     try:
-        return _post_httpx(base, api_key, payload)
-    except ImportError:
-        pass  # httpx absent: fall through to stdlib
-    except Exception:
-        return None  # don't pay a second timeout on transport errors
-    try:
-        return _post_urllib(base, api_key, payload)
+        text = _post_ollama(host, _payload(model, prompt))
     except Exception:
         return None
+    return text.strip() or None
 
 
 def narrate(txn: dict, feats: dict, score_out: dict, graph_facts: dict, lang: str = "en") -> dict:

@@ -149,10 +149,14 @@ def test_env_example_contract():
     lines = [ln.strip() for ln in Path(".env.example").read_text().splitlines()
              if ln.strip() and not ln.strip().startswith("#")]
     got = dict(ln.split("=", 1) for ln in lines)
-    for var in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
+    for var in ("OLLAMA_HOST", "OLLAMA_MODEL", "VIGIL_API_KEY",
+                "VIGIL_DECISIONS_DB",
                 "VIGIL_ALERTS_LIMIT", "VIGIL_RATE_LIMIT_PER_MIN"):
         assert var in got, var
     import re
+    assert "localhost" in got["OLLAMA_HOST"], "narratives must default to local"
+    assert not got["OLLAMA_HOST"].startswith("https://api."), \
+        "no cloud endpoint for case evidence"
     assert not any(re.search(r"gsk_[A-Za-z0-9]{20,}", v) for v in got.values()), \
         "real-looking secret in .env.example"
 

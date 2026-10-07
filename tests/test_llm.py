@@ -1,8 +1,9 @@
-"""LLM investigator tests — live path included, without needing a real API key.
+"""LLM investigator tests — live path included, without needing a running daemon.
 
 The offline fallback is covered in test_smoke.py; here we verify the evidence
-contract, sanitization, both language templates, and the Groq/OpenAI-compatible
-call itself via a mocked transport (success + failure + no-key paths).
+contract, sanitization, both language templates, and the local Ollama call
+itself via a mocked transport (success + failure + unreachable paths).
+Ollama-shape responses only: there is no remote provider anymore, by design.
 """
 import io
 import json
@@ -17,6 +18,12 @@ def _score():
     return {"risk_score": 0.91, "risk_level": "High",
             "recommended_action": "step-up-auth + hold + analyst review",
             "top_3_reasons": ["new device not seen for this sender"]}
+
+
+def _no_daemon(monkeypatch):
+    """Point at a dead port so narrate deterministically takes the fallback,
+    even on machines where `ollama serve` happens to be running."""
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:1")
 
 
 def test_safe_strips_controls_and_caps():
@@ -36,7 +43,8 @@ def test_evidence_never_carries_raw_control_chars():
     assert "Ignore previous instructions." in ev["sender"]  # quoted, not followed
 
 
-def test_templates_both_languages():
+def test_templates_both_languages(monkeypatch):
+    _no_daemon(monkeypatch)
     from api.llm import narrate
     txn = {"sender_id": "C1", "receiver_id": "C2", "amount": 25000,
            "channel": "app", "device_id": "D", "location": "Dhaka",
@@ -59,8 +67,9 @@ class _FakeHTTP:
     def __call__(self, req, timeout=None):
         self.captured["url"] = req.full_url
         headers = {k.lower(): v for k, v in req.header_items()}
-        self.captured["auth"] = headers.get("authorization")
+        self.captured["headers"] = headers
         self.captured["ua"] = headers.get("user-agent", "")
+        self.captured["body"] = json.loads(req.data.decode())
         if self.exc:
             raise self.exc
         return self
@@ -75,67 +84,49 @@ class _FakeHTTP:
         return json.dumps(self.payload).encode()
 
 
-def test_call_llm_success_path(monkeypatch):
+def test_call_llm_hits_local_daemon(monkeypatch):
     import api.llm as llm
-    monkeypatch.setenv("LLM_API_KEY", "gsk_test")
-    seen = {}
-
-    def _fake_httpx(base, api_key, payload):
-        seen.update(base=base, auth=api_key, model=payload["model"])
-        return "SUMMARY"
-
-    monkeypatch.setattr(llm, "_post_httpx", _fake_httpx)
+    monkeypatch.setenv("OLLAMA_HOST", "http://ml-box:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:3b")
+    fake = _FakeHTTP({"message": {"content": "SUMMARY"}})
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
     assert llm._call_llm("hello") == "SUMMARY"
-    assert seen["auth"] == "gsk_test" and "groq" in seen["base"]  # default endpoint
+    assert fake.captured["url"] == "http://ml-box:11434/api/chat"  # local only
+    assert "http" not in fake.captured["body"]["model"]  # a model name, not a URL
+    assert not fake.captured["body"]["stream"]
 
 
-def test_call_llm_transport_failure_returns_none(monkeypatch):
+def test_call_llm_posts_no_credentials(monkeypatch):
+    """Nothing secret ever leaves the box: no auth header, no key in body."""
     import api.llm as llm
-    monkeypatch.setenv("LLM_API_KEY", "gsk_test")
+    fake = _FakeHTTP({"message": {"content": "ok"}})
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
+    assert llm._call_llm("hello") == "ok"
+    assert "authorization" not in fake.captured["headers"]
+    body = json.dumps(fake.captured["body"])
+    assert "Bearer" not in body and "gsk_" not in body
 
-    def _boom(*a, **k):
-        raise TimeoutError("venue wifi died")
 
-    def _must_not_fall_back(*a, **k):
-        raise AssertionError("no second attempt after transport errors")
-
-    monkeypatch.setattr(llm, "_post_httpx", _boom)
-    monkeypatch.setattr(llm, "_post_urllib", _must_not_fall_back)
+def test_call_llm_daemon_down_returns_none(monkeypatch):
+    import api.llm as llm
+    fake = _FakeHTTP(exc=ConnectionRefusedError("no daemon here"))
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
     assert llm._call_llm("hello") is None
 
 
-def test_call_llm_falls_back_to_urllib_without_httpx(monkeypatch):
+def test_call_llm_empty_content_returns_none(monkeypatch):
     import api.llm as llm
-    monkeypatch.setenv("LLM_API_KEY", "gsk_test")
-
-    def _no_httpx(*a, **k):
-        raise ImportError("minimal install")
-
-    fake = _FakeHTTP({"choices": [{"message": {"content": "VIA-URLLIB"}}]})
-    monkeypatch.setattr(llm, "_post_httpx", _no_httpx)
+    fake = _FakeHTTP({"message": {"content": "   "}})
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
-    assert llm._call_llm("hello") == "VIA-URLLIB"
+    assert llm._call_llm("hello") is None
 
 
-def test_post_urllib_sends_auth_and_custom_ua(monkeypatch):
+def test_post_ollama_sends_custom_ua(monkeypatch):
     import api.llm as llm
-    fake = _FakeHTTP({"choices": [{"message": {"content": "ok"}}]})
+    fake = _FakeHTTP({"message": {"content": "ok"}})
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake)
-    assert llm._post_urllib("https://x.test", "k123", {"model": "m"}) == "ok"
-    assert fake.captured["auth"] == "Bearer k123"
+    assert llm._post_ollama("http://x.test", {"model": "m"}) == "ok"
     assert "Python-urllib" not in fake.captured.get("ua", "Python-urllib")
-
-
-def test_call_llm_no_key_short_circuits(monkeypatch):
-    import api.llm as llm
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
-
-    def _must_not_call(*a, **k):
-        raise AssertionError("no transport without a key")
-
-    monkeypatch.setattr(llm, "_post_httpx", _must_not_call)
-    monkeypatch.setattr(llm, "_post_urllib", _must_not_call)
-    assert llm._call_llm("hello") is None
 
 
 def test_narrate_uses_live_text_when_available(monkeypatch):

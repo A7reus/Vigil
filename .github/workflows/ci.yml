@@ -1,5 +1,5 @@
 # Continuous proof: install, generate small data, train, full test suite.
-# Live LLM tests stay skipped (they need LLM_API_KEY + VIGIL_LIVE_LLM_TEST=1).
+# Live LLM tests stay skipped (they need VIGIL_LIVE_LLM_TEST=1 + local ollama).
 name: ci
 on:
   push:

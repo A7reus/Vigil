@@ -16,13 +16,14 @@ Answers the Track 01 test: **What happened? Why is it risky? What should upay do
 Python 3.12+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib.
 ML: XGBoost primary classifier (HGB fallback if absent), per-row SHAP attributions
 (lazy, ~1.4ms, falls back to global importance), IsolationForest anomaly
-(train-calibrated percentile), NetworkX 2-hop mule boost. LLM: any
-OpenAI-compatible API (Groq default) with deterministic offline template fallback.
+(train-calibrated percentile), NetworkX 2-hop mule boost. Narratives: a small
+local model via Ollama (`OLLAMA_MODEL`, default `qwen2.5:3b`) with
+deterministic offline template fallback — case evidence never leaves the box.
 
 ## Requirements
 - Python 3.12+ with venv (pandas 3 requires it)
 - 2 GB RAM, no GPU needed (CPU-only; `nvidia-nccl` wheels ship with XGBoost but are unused)
-- Optional `LLM_API_KEY` for live narratives (works offline without it)
+- Optional local narratives: `ollama pull qwen2.5:3b` + `ollama serve` (works offline without it, via templates)
 
 ## Installation and setup
 ```bash
@@ -38,9 +39,8 @@ environment variables take precedence over the file.
 
 | Name | Purpose | Example |
 |---|---|---|
-| `LLM_API_KEY` | Live investigator narratives (leave unset for offline fallback) | `gsk_...` (placeholder: never commit secrets) |
-| `LLM_BASE_URL` | OpenAI-compatible endpoint | `https://api.groq.com/openai/v1` |
-| `LLM_MODEL` | Chat model (default follows Groq's post-Aug-2026 replacement) | `openai/gpt-oss-20b` |
+| `OLLAMA_HOST` | Local Ollama daemon (never a cloud URL — case data stays in-country) | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Small local instruction model with usable Bangla | `qwen2.5:3b` |
 | `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
 | `VIGIL_ALERT_WINDOW` | Recent rows scored to fill the queue; top risks kept | `2000` |
 | `VIGIL_RATE_LIMIT_PER_MIN` | Per-IP writes/min on `/score` + `/decision` (`0` disables) | `120` |

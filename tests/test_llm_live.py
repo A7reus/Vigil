@@ -1,10 +1,9 @@
-"""LIVE LLM checks — hit the real provider, skipped unless explicitly enabled.
+"""LIVE LLM checks — hit the local Ollama daemon, skipped unless enabled.
 
-Run:  LLM_API_KEY=gsk_... VIGIL_LIVE_LLM_TEST=1 pytest tests/test_llm_live.py -q
-Double-gated so a stray key in CI/judging never touches the network.
-Verifies what mocks cannot: the endpoint is reachable, the configured model ID
-is actually served (defaults rot — llama-3.1-8b-instant died Aug 2026), the
-model follows the template, stays grounded, and ignores injected instructions.
+Run:  VIGIL_LIVE_LLM_TEST=1 pytest tests/test_llm_live.py -q
+(with `ollama serve` running and a model pulled, e.g. `ollama pull qwen2.5:3b`).
+Single gate: no keys exist anymore, so reaching the daemon is the only setup.
+Tests that find no daemon skip at runtime instead of failing.
 """
 import os
 import time
@@ -12,26 +11,36 @@ import time
 import pytest
 
 live = pytest.mark.skipif(
-    not (os.getenv("LLM_API_KEY") and os.getenv("VIGIL_LIVE_LLM_TEST") == "1"),
-    reason="live LLM check needs LLM_API_KEY + VIGIL_LIVE_LLM_TEST=1",
+    os.getenv("VIGIL_LIVE_LLM_TEST") != "1",
+    reason="live LLM check needs VIGIL_LIVE_LLM_TEST=1 + local ollama",
 )
 
 
+def _echo_or_skip(prompt: str) -> str | None:
+    from api import llm
+    out = llm._call_llm(prompt)
+    if out is None:
+        pytest.skip("no local ollama daemon (start `ollama serve` + pull a model)")
+    return out
+
+
 @live
-def test_live_endpoint_serves_configured_model():
+def test_live_daemon_serves_configured_model():
     from api import llm
     t0 = time.perf_counter()
-    out = llm._call_llm("Reply with exactly: PONG")
+    out = _echo_or_skip("Reply with exactly: PONG")
     dt = time.perf_counter() - t0
     assert out and "PONG" in out, f"no PONG in {out!r} ({dt:.1f}s)"
-    print(f"\nlive echo ok in {dt:.1f}s (model={os.getenv('LLM_MODEL', 'openai/gpt-oss-20b')})")
+    print(f"\nlive echo ok in {dt:.1f}s (model={os.getenv('OLLAMA_MODEL', 'qwen2.5:3b')})")
 
 
 def _live_narrate(*args, **kw):
-    """Narrate with one retry: live models occasionally return empty content."""
+    """Narrate with one retry: small local models occasionally return empty."""
     from api.llm import narrate
     out = narrate(*args, **kw)
     if not out["llm_used"]:
+        if _echo_or_skip("Reply with exactly: PONG") is None:
+            pytest.skip("no local ollama daemon")
         out = narrate(*args, **kw)
     return out
 
