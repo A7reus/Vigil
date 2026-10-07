@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api.decisions import DecisionLog
 from api.llm import narrate
 from api.rules import decide, get_config
 from api.schemas import DecisionRequest, ScoreRequest
@@ -39,11 +40,12 @@ fraud_set: set = set()
 alert_cache: list[dict] = []
 startup_info: dict = {}
 request_count: int = 0
+decision_log: DecisionLog | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, graph, fraud_set, alert_cache, startup_info
+    global store, graph, fraud_set, alert_cache, startup_info, decision_log
     t0 = time.perf_counter()
     get_config()
     try:
@@ -56,6 +58,9 @@ async def lifespan(app: FastAPI):
             "then start the API."
         ) from e
     store = HistoryStore()
+    # Audit trail lives in Postgres (DATABASE_URL required — fail fast here,
+    # not mid-demo). Replaces the phase-1 process-local list.
+    decision_log = DecisionLog()
     if len(store.txns) == 0:
         log.warning("no transaction history found in data/ — queue will be empty until data is generated")
     tx = store.txns
@@ -184,7 +189,7 @@ def health():
 def metrics():
     """Lightweight ops counters (monitoring expectation in the guideline)."""
     return {"requests_scored": request_count, "queue_size": len(alert_cache),
-            "decisions_logged": 0 if store is None else len(store.decisions),
+            "decisions_logged": 0 if decision_log is None else len(decision_log),
             "startup": startup_info}
 
 
@@ -196,6 +201,16 @@ MAX_LIVE_CASES = 500
 # Per-IP token buckets for write endpoints (demo-grade flood protection; the
 # scoring state itself is already isolated from LIVE traffic in store.py).
 _rate_hits: dict[str, list[float]] = {}
+
+
+def _require_key(request: Request) -> None:
+    """Shared-secret auth for writes. Empty key = open (judging demos);
+    set VIGIL_API_KEY anywhere exposed — clients send it as X-API-Key."""
+    want = os.getenv("VIGIL_API_KEY", "")
+    if not want:
+        return
+    if request.headers.get("x-api-key") != want:
+        raise HTTPException(401, "missing or wrong X-API-Key")
 
 
 def _rate_limit_ok(ip: str) -> bool:
@@ -225,6 +240,7 @@ def _known_txn_ids() -> set:
 def score(req: ScoreRequest, request: Request):
     global request_count
     assert store is not None and graph is not None
+    _require_key(request)
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     t0 = time.perf_counter()
@@ -236,7 +252,8 @@ def score(req: ScoreRequest, request: Request):
                       boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])
     s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
     d = decide(s["risk_score"])
-    nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
+    # Scoring path: template narrative, answered in ms (see narrate docstring).
+    nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang, live=False)
     txn_id = f"LIVE-{uuid4().hex[:8]}"
     # Scoring-neutral: visible in timelines only, never moves anyone's features.
     store.append_live({"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
@@ -314,23 +331,17 @@ def case(txn_id: str, lang: str = "en"):
 
 @app.post("/decision")
 def decision(req: DecisionRequest, request: Request):
-    assert store is not None
+    assert store is not None and decision_log is not None
+    _require_key(request)
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
     entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()}
-    updated = False
-    for i, d in enumerate(store.decisions):
-        if d.get("txn_id") == req.txn_id and d.get("analyst") == req.analyst:
-            store.decisions[i] = entry
-            updated = True
-            break
-    if not updated:
-        store.decisions.append(entry)
+    updated = decision_log.upsert(entry)
     log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, req.analyst, updated)
     return {"ok": True, "updated": updated, "logged": req.model_dump(),
-            "pending_retrain": len(store.decisions)}
+            "pending_retrain": len(decision_log)}
 
 
 # Analyst console (no build step): served from /web. API routes above take

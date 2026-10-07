@@ -10,19 +10,20 @@ Answers the Track 01 test: **What happened? Why is it risky? What should upay do
 - **Analyst queue**: `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline plus narrative, reusing the exact cached causal features), `POST /decision` (feedback loop for retraining).
 - **Analyst console**: a static frontend in `/web` with no build step, served at `GET /`: a risk queue with level filter and search, case detail with English/Bangla narrative plus timeline plus decision buttons, and a `POST /score` playground.
 - **Evaluation**: `python -m eval.evaluate` reports Precision@100, Recall@5%FPR, AUC against a rule baseline, p95 latency, fairness (FPR by district and account age), and a business simulation (loss prevented, analyst minutes saved). Batched scoring handles 8k rows in about 2s, down from about 100s.
-- **Cross-dataset check**: the same pipeline on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules, with our best signals unavailable. See `docs/paysim-validation.md`.
+- **Cross-dataset check**: the same pipeline retrained on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules, with our best signals unavailable — labeled pipeline transfer, not model transfer. The stricter test, the frozen home model scoring PaySim with no retraining (`eval/zeroshot.py`), holds AUC 0.70 and Recall@5%FPR 0.60 against 0.50/0.0 for rules (`docs/zeroshot-paysim.json`). See `docs/paysim-validation.md`.
 
 ## Technology stack
 Python 3.12+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib.
 ML: XGBoost primary classifier (HGB fallback if absent), per-row SHAP attributions
 (lazy, ~1.4ms, falls back to global importance), IsolationForest anomaly
-(train-calibrated percentile), NetworkX 2-hop mule boost. LLM: any
-OpenAI-compatible API (Groq default) with deterministic offline template fallback.
+(train-calibrated percentile), NetworkX 2-hop mule boost. Narratives: a small
+local model via Ollama (`OLLAMA_MODEL`, default `qwen2.5:3b`) with
+deterministic offline template fallback — case evidence never leaves the box.
 
 ## Requirements
 - Python 3.12+ with venv (pandas 3 requires it)
 - 2 GB RAM, no GPU needed (CPU-only; `nvidia-nccl` wheels ship with XGBoost but are unused)
-- Optional `LLM_API_KEY` for live narratives (works offline without it)
+- Optional local narratives: `ollama pull qwen2.5:3b` + `ollama serve` (works offline without it, via templates)
 
 ## Installation and setup
 ```bash
@@ -38,10 +39,11 @@ environment variables take precedence over the file.
 
 | Name | Purpose | Example |
 |---|---|---|
-| `LLM_API_KEY` | Live investigator narratives (leave unset for offline fallback) | `gsk_...` (placeholder: never commit secrets) |
-| `LLM_BASE_URL` | OpenAI-compatible endpoint | `https://api.groq.com/openai/v1` |
-| `LLM_MODEL` | Chat model (default follows Groq's post-Aug-2026 replacement) | `openai/gpt-oss-20b` |
+| `OLLAMA_HOST` | Local Ollama daemon (never a cloud URL — case data stays in-country) | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Small local instruction model with usable Bangla | `qwen2.5:3b` |
 | `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
+| `VIGIL_API_KEY` | Shared secret for writes (empty = open demo; set = `X-API-Key` required) | `` (empty) |
+| `DATABASE_URL` | Postgres for the decision audit log — required, API refuses to boot without it | `postgresql://vigil:vigil@localhost:5432/vigil` |
 | `VIGIL_ALERT_WINDOW` | Recent rows scored to fill the queue; top risks kept | `2000` |
 | `VIGIL_RATE_LIMIT_PER_MIN` | Per-IP writes/min on `/score` + `/decision` (`0` disables) | `120` |
 

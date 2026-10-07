@@ -12,7 +12,8 @@ def test_bands():
 
 def test_llm_fallback_works_offline(monkeypatch):
     import api.llm as llm
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    # Dead port: fallback must hold even where a daemon happens to run.
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:1")
     out = llm.narrate(
         {"sender_id": "C000001", "receiver_id": "C000002", "amount": 25000,
          "channel": "app", "timestamp": "2026-08-15T23:10:00"},

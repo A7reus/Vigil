@@ -89,12 +89,18 @@ def test_no_label_leakage(client):
 @needs_stack
 def test_decision_upsert_and_unknown_404(client):
     # Finding 6: unknown ids 404; duplicates upsert instead of piling up.
+    # Unique analyst: the log persists across runs, so a fixed name would
+    # turn the first insert into an update on repeat runs.
+    from uuid import uuid4
+    analyst = f"fuzz-{uuid4().hex[:8]}"
     assert client.post("/decision", json={"txn_id": "TOTALLY-MADE-UP",
                                           "decision": "freeze"}).status_code == 404
     tid = client.get("/alerts?limit=1").json()["alerts"][0]["txn_id"]
     n0 = client.get("/metrics").json()["decisions_logged"]
-    assert client.post("/decision", json={"txn_id": tid, "decision": "freeze"}).status_code == 200
-    r = client.post("/decision", json={"txn_id": tid, "decision": "freeze"}).json()
+    assert client.post("/decision", json={"txn_id": tid, "decision": "freeze",
+                                          "analyst": analyst}).status_code == 200
+    r = client.post("/decision", json={"txn_id": tid, "decision": "freeze",
+                                       "analyst": analyst}).json()
     assert r["updated"] is True
     assert client.get("/metrics").json()["decisions_logged"] == n0 + 1
 
@@ -149,10 +155,14 @@ def test_env_example_contract():
     lines = [ln.strip() for ln in Path(".env.example").read_text().splitlines()
              if ln.strip() and not ln.strip().startswith("#")]
     got = dict(ln.split("=", 1) for ln in lines)
-    for var in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
+    for var in ("OLLAMA_HOST", "OLLAMA_MODEL", "VIGIL_API_KEY",
+                "DATABASE_URL",
                 "VIGIL_ALERTS_LIMIT", "VIGIL_RATE_LIMIT_PER_MIN"):
         assert var in got, var
     import re
+    assert "localhost" in got["OLLAMA_HOST"], "narratives must default to local"
+    assert not got["OLLAMA_HOST"].startswith("https://api."), \
+        "no cloud endpoint for case evidence"
     assert not any(re.search(r"gsk_[A-Za-z0-9]{20,}", v) for v in got.values()), \
         "real-looking secret in .env.example"
 
@@ -170,3 +180,23 @@ def test_rate_limit_429s(monkeypatch, client):
     finally:
         monkeypatch.setenv("VIGIL_RATE_LIMIT_PER_MIN", "120")
         main._rate_hits.clear()
+
+
+@needs_stack
+def test_api_key_gates_writes_only_when_set(monkeypatch, client):
+    # Open by default (judging demos); locked when VIGIL_API_KEY is set.
+    assert client.post("/score", json=_score_body()).status_code == 200
+    monkeypatch.setenv("VIGIL_API_KEY", "venue-secret")
+    try:
+        assert client.post("/score", json=_score_body()).status_code == 401
+        tid = client.get("/alerts?limit=1").json()["alerts"][0]["txn_id"]
+        no_key = client.post("/decision", json={"txn_id": tid, "decision": "allow"})
+        assert no_key.status_code == 401
+        headers = {"X-API-Key": "venue-secret"}
+        assert client.post("/score", json=_score_body(), headers=headers).status_code == 200
+        r = client.post("/decision", json={"txn_id": tid, "decision": "allow",
+                                           "analyst": "key-test"}, headers=headers)
+        assert r.status_code == 200
+        assert client.get("/alerts?limit=1").status_code == 200  # reads stay open
+    finally:
+        monkeypatch.delenv("VIGIL_API_KEY", raising=False)
