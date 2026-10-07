@@ -45,3 +45,24 @@ def test_log_survives_reopen():
     DecisionLog(url=url).upsert(_entry(txn="REOPEN-1"))
     reopened = DecisionLog(url=url)
     assert any(r["txn_id"] == "REOPEN-1" for r in reopened.all())
+
+
+@needs_pg
+def test_legacy_table_migrates_txn_column():
+    """Pre-migration databases (no txn column) keep working after boot."""
+    import os
+    import psycopg
+    from api.decisions import DecisionLog
+    url = os.environ["TEST_POSTGRES_URL"]
+    db = psycopg.connect(url, autocommit=True)
+    db.execute("DROP TABLE IF EXISTS decisions")
+    db.execute("""CREATE TABLE decisions (
+        txn_id TEXT NOT NULL, decision TEXT NOT NULL,
+        analyst TEXT NOT NULL DEFAULT 'analyst',
+        note TEXT NOT NULL DEFAULT '',
+        at TEXT NOT NULL,
+        PRIMARY KEY (txn_id, analyst))""")
+    db.close()
+    log = DecisionLog(url=url)  # boot migrates
+    assert log.upsert(_entry()) is False
+    assert log.all()[0]["txn"] == "{}"
