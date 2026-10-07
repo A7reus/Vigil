@@ -1,11 +1,13 @@
 """Vigil FastAPI: POST /score, GET /alerts, GET /case/:id, POST /decision."""
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import math
 import os
 import time
+from collections import Counter, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -32,8 +34,44 @@ try:
 except ImportError:
     pass  # minimal installs without python-dotenv: plain environment only
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+_rid: contextvars.ContextVar[str] = contextvars.ContextVar("rid", default="-")
+
+
+class _RidFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.rid = _rid.get()
+        return True
+
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps({"ts": self.formatTime(record), "level": record.levelname,
+                           "logger": record.name, "rid": getattr(record, "rid", "-"),
+                           "msg": record.getMessage()})
+
+
+_handler = logging.StreamHandler()
+_handler.addFilter(_RidFilter())
+if os.getenv("VIGIL_LOG_JSON", "0") == "1":
+    _handler.setFormatter(_JsonFormatter())
+else:
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s [%(rid)s]: %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 log = logging.getLogger("vigil")
+# Log hygiene (item 10): request logs carry txn_ids (random LIVE ids or
+# synthetic queue ids) and usernames (audit-required). Wallet IDs, amounts
+# and device/location values are never logged — check before adding fields.
+
+
+def _client_ip(request: Request) -> str:
+    """Client IP for rate buckets. Behind Render-style proxies the socket IP
+    is the proxy, so honor X-Forwarded-For when VIGIL_TRUST_PROXY=1 (default:
+    on — document the spoofing caveat, it only affects rate buckets)."""
+    if os.getenv("VIGIL_TRUST_PROXY", "1") == "1":
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff.strip():
+            return xff.split(",")[0].strip() or "unknown"
+    return request.client.host if request.client else "unknown"
 
 store: HistoryStore | None = None
 graph: nx.DiGraph | None = None
@@ -180,6 +218,15 @@ def _ensure_finite(obj) -> None:
 
 
 @app.middleware("http")
+async def _request_id(request: Request, call_next):
+    rid = request.headers.get("X-Request-ID", "").strip()[:64] or uuid4().hex[:12]
+    _rid.set(rid)
+    resp = await call_next(request)
+    resp.headers["X-Request-ID"] = rid
+    return resp
+
+
+@app.middleware("http")
 async def _reject_nonfinite_json(request: Request, call_next):
     if request.method in ("POST", "PUT", "PATCH") and "application/json" in request.headers.get("content-type", ""):
         try:
@@ -232,16 +279,53 @@ def ready():
     return JSONResponse({"ready": ok, "checks": checks}, status_code=200 if ok else 503)
 
 
+# Ops counters (item 10): in-memory, so single-worker only (see runbook).
+_ops = {"errors": Counter(), "lat_ms": deque(maxlen=500),
+        "llm_used": 0, "llm_fallback": 0}
+
+
+def _ops_snapshot() -> dict:
+    lat = sorted(_ops["lat_ms"])
+    pct = (lambda p: round(lat[min(len(lat) - 1, int(len(lat) * p))], 1)) if lat else (lambda p: 0.0)
+    return {"errors": dict(_ops["errors"]),
+            "score_latency_ms": {"n": len(lat), "p50": pct(0.5), "p95": pct(0.95)},
+            "llm": {"used": _ops["llm_used"], "fallback": _ops["llm_fallback"]}}
+
+
 @app.get("/metrics")
 def metrics():
-    """Lightweight ops counters (monitoring expectation in the guideline)."""
+    """JSON ops counters."""
     try:
         logged, open_cases = db.count_decisions(), len(db.list_open_cases(limit=100000))
     except Exception:
         logged, open_cases = 0, len(alert_cache)
     return {"requests_scored": request_count, "queue_size": len(alert_cache),
             "decisions_logged": logged, "open_cases": open_cases,
-            "startup": startup_info}
+            "model_version": infer.MODEL_VERSION,
+            "ops": _ops_snapshot(), "startup": startup_info}
+
+
+@app.get("/metrics/prom")
+def metrics_prom():
+    """Prometheus text exposition for the pilot dashboard."""
+    from fastapi.responses import PlainTextResponse
+    s = _ops_snapshot()
+    lines = ["# HELP vigil_scores_total Scored transactions",
+             "# TYPE vigil_scores_total counter",
+             f"vigil_scores_total {request_count}",
+             "# HELP vigil_errors_total Errors by endpoint",
+             "# TYPE vigil_errors_total counter"]
+    lines += [f'vigil_errors_total{{endpoint="{e}"}} {n}' for e, n in s["errors"].items()]
+    lines += ["# HELP vigil_score_latency_ms_p95 Scoring p95 latency",
+              "# TYPE vigil_score_latency_ms_p95 gauge",
+              f"vigil_score_latency_ms_p95 {s['score_latency_ms']['p95']}",
+              "# HELP vigil_llm_used_total Narratives from the live model",
+              "# TYPE vigil_llm_used_total counter",
+              f"vigil_llm_used_total {s['llm']['used']}",
+              "# HELP vigil_llm_fallback_total Template narratives served",
+              "# TYPE vigil_llm_fallback_total counter",
+              f"vigil_llm_fallback_total {s['llm']['fallback']}"]
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 # --- auth: registration is pending until an admin approves -----------------
@@ -259,7 +343,7 @@ def register(req: RegisterRequest):
 
 @app.post("/auth/login")
 def login(req: LoginRequest, request: Request):
-    if not _rate_limit_ok("login:" + (request.client.host if request.client else "?")):
+    if not _rate_limit_ok("login:" + _client_ip(request)):
         raise HTTPException(429, "too many login attempts, retry in a minute")
     u = db.get_user_by_username(req.username)
     if not u or not auth.verify_password(req.password, u["pw_hash"]):
@@ -443,7 +527,7 @@ def _known_txn_ids() -> set:
 def score(req: ScoreRequest, request: Request, commit: bool = False):
     global request_count
     assert store is not None and graph is not None
-    if not _rate_limit_ok(request.client.host if request.client else "unknown"):
+    if not _rate_limit_ok(_client_ip(request)):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     committer = None
     if commit:
@@ -471,6 +555,7 @@ def score(req: ScoreRequest, request: Request, commit: bool = False):
         nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
     except Exception as e:
         # Item 6: fail closed to human review, never silently allow.
+        _ops["errors"]["score"] += 1
         log.exception("score pipeline failed, degrading to review")
         degraded, derr = True, f"{type(e).__name__}"
         s = {"p_fraud": 0.0, "anomaly": 0.0, "graph_boost": 0.0, "risk_score": 0.60,
@@ -501,6 +586,11 @@ def score(req: ScoreRequest, request: Request, commit: bool = False):
         live_cases.pop(next(iter(live_cases)))
     latency_ms = (time.perf_counter() - t0) * 1000
     request_count += 1
+    _ops["lat_ms"].append(latency_ms)
+    if nar.get("llm_used"):
+        _ops["llm_used"] += 1
+    else:
+        _ops["llm_fallback"] += 1
     log.info("score %s -> %.3f %s (%.1fms degraded=%s)", txn_id, s["risk_score"],
              d["risk_level"], latency_ms, degraded)
     resp = {"txn_id": txn_id, "risk_score": s["risk_score"], "risk_level": d["risk_level"],
@@ -604,7 +694,7 @@ def case(txn_id: str, lang: str = "en"):
 @app.post("/decision")
 def decision(req: DecisionRequest, request: Request):
     assert store is not None
-    if not _rate_limit_ok(request.client.host if request.client else "unknown"):
+    if not _rate_limit_ok(_client_ip(request)):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")

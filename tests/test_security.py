@@ -195,6 +195,40 @@ def test_graph_visit_cap():
     assert out["boost"] == 0.0
 
 
+def test_request_id_echo_and_generated(client):
+    r = client.post("/score", json={"sender_id": "RID", "receiver_id": "R", "amount": 100,
+                                    "channel": "app", "device_id": "D", "location": "Dhaka",
+                                    "timestamp": "2026-08-15T12:00:00", "type": "P2P"},
+                    headers={"X-Request-ID": "req-123"})
+    assert r.headers["X-Request-ID"] == "req-123"
+    r2 = client.get("/health")
+    assert len(r2.headers["X-Request-ID"]) > 0
+
+
+def test_xff_splits_rate_buckets(monkeypatch, client):
+    import api.main as main
+    main._rate_hits.clear()
+    monkeypatch.setenv("VIGIL_RATE_LIMIT_PER_MIN", "1")
+    body = {"sender_id": "XFF", "receiver_id": "R", "amount": 100, "channel": "app",
+            "device_id": "D", "location": "Dhaka", "timestamp": "2026-08-15T12:00:00", "type": "P2P"}
+    try:
+        assert client.post("/score", json=body).status_code == 200
+        assert client.post("/score", json=body).status_code == 429
+        r = client.post("/score", json=body, headers={"X-Forwarded-For": "9.9.9.9"})
+        assert r.status_code == 200
+    finally:
+        monkeypatch.setenv("VIGIL_RATE_LIMIT_PER_MIN", "120")
+        main._rate_hits.clear()
+
+
+def test_metrics_shapes(client):
+    m = client.get("/metrics").json()
+    assert {"ops", "model_version"} <= set(m)
+    assert {"errors", "score_latency_ms", "llm"} <= set(m["ops"])
+    prom = client.get("/metrics/prom")
+    assert prom.status_code == 200 and "vigil_scores_total" in prom.text
+
+
 def test_rate_limit_429s(monkeypatch, client):
     # Finding 4 (flood): per-IP bucket trips with a JSON 429, restores after.
     import api.main as main
