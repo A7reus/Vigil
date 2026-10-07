@@ -198,7 +198,8 @@ async def _reject_nonfinite_json(request: Request, call_next):
 def health():
     return {"ok": True, "history_rows": 0 if store is None else len(store.txns),
             "graph_nodes": 0 if graph is None else graph.number_of_nodes(),
-            "queue_size": len(alert_cache), "startup": startup_info}
+            "queue_size": len(alert_cache), "model_version": infer.MODEL_VERSION,
+            "startup": startup_info}
 
 
 @app.get("/ready")
@@ -449,6 +450,13 @@ def score(req: ScoreRequest, request: Request, commit: bool = False):
         # Authenticated ingestion (item 1): reviewed/confirmed traffic joins
         # committed history so velocity and seen-sets reflect real behavior.
         committer = auth.need_user(request)
+    idem = (request.headers.get("Idempotency-Key") or "").strip()
+    if len(idem) > 128:
+        raise HTTPException(422, "Idempotency-Key must be at most 128 chars")
+    if idem:
+        hit = db.get_idempotent(idem)
+        if hit:
+            return {**hit, "deduplicated": True}
     t0 = time.perf_counter()
     txn = req.model_dump()
     degraded, derr = False, ""
@@ -495,14 +503,18 @@ def score(req: ScoreRequest, request: Request, commit: bool = False):
     request_count += 1
     log.info("score %s -> %.3f %s (%.1fms degraded=%s)", txn_id, s["risk_score"],
              d["risk_level"], latency_ms, degraded)
-    return {"txn_id": txn_id, "risk_score": s["risk_score"], "risk_level": d["risk_level"],
+    resp = {"txn_id": txn_id, "risk_score": s["risk_score"], "risk_level": d["risk_level"],
             "top_3_reasons": s["top_3_reasons"], "recommended_action": d["recommended_action"],
-            "degraded": degraded,
+            "degraded": degraded, "deduplicated": False,
+            "model_version": infer.MODEL_VERSION,
             "components": {**{k: s[k] for k in ("p_fraud", "anomaly", "graph_boost")},
                             "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
                             "fraud_neighbor_sample": gf.get("fraud_neighbor_sample", []),
                             "latency_ms": round(latency_ms, 1)},
             "narrative": nar["narrative"]}
+    if idem:
+        db.put_idempotent(idem, resp)
+    return resp
 
 
 @app.get("/alerts")
@@ -598,7 +610,8 @@ def decision(req: DecisionRequest, request: Request):
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
     me = auth.current_user(request)
     analyst = me["username"] if me else req.analyst
-    entry, updated = db.upsert_decision(req.txn_id, analyst, req.decision, req.note)
+    entry, updated = db.upsert_decision(req.txn_id, analyst, req.decision, req.note,
+                                        model_version=infer.MODEL_VERSION)
     log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, analyst, updated)
     return {"ok": True, "updated": updated,
             "logged": {"txn_id": req.txn_id, "decision": req.decision,

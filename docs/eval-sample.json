@@ -5,11 +5,11 @@
     "auc": 0.9982,
     "precision@100": 1.0,
     "recall@5%FPR": 0.9938,
-    "p95_latency_ms": 25.88
+    "p95_latency_ms": 9.4
   },
   "rule_baseline": {
     "auc": 0.8119,
-    "precision@100": 0.86,
+    "precision@100": 0.84,
     "recall@5%FPR": 0.2149
   },
   "fairness_FPR@sweep": {
@@ -36,5 +36,5 @@
     "analyst_minutes": 2000,
     "minutes_saved_vs_manual": 13000
   },
-  "eval_latency_total_s": 6.6
+  "eval_latency_total_s": 2.0
 }

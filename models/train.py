@@ -123,6 +123,19 @@ def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | No
     # fraud address book for graph boost (from TRAIN only — no test leakage)
     fset = set(txns[tr & (txns.is_fraud == 1).to_numpy()][["sender", "receiver"]].stack().tolist())
     (art / "fraud_nodes.json").write_text(json.dumps(sorted(fset)))
+    # Item 7: integrity manifest + version. joblib unpickles can execute code,
+    # so serving verifies these checksums before loading (fail closed).
+    import hashlib
+    sums = {}
+    for name in ("classifier.pkl", "anomaly.pkl", "feature_cols.json",
+                 "anomaly_calib.npy", "feature_importance.json", "fraud_nodes.json"):
+        p = art / name
+        if p.exists():
+            sums[name] = hashlib.sha256(p.read_bytes()).hexdigest()
+    (art / "sha256sums.json").write_text(json.dumps(sums, indent=2))
+    version_src = "".join(sums.get(n, "") for n in
+                          ("classifier.pkl", "anomaly.pkl", "feature_cols.json"))
+    metrics["model_version"] = hashlib.sha256(version_src.encode()).hexdigest()[:12]
     (art / "metrics.json").write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2))
     return metrics

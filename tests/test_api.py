@@ -89,6 +89,48 @@ def test_frontend_served(client):
 
 
 @needs_stack
+def test_model_version_reported(client):
+    import json
+    expect = json.load(open("artifacts/metrics.json")).get("model_version", "unknown")
+    body = client.post("/score", json={"sender_id": "V", "receiver_id": "R", "amount": 100,
+                                       "channel": "app", "device_id": "D", "location": "Dhaka",
+                                       "timestamp": "2026-08-15T12:00:00", "type": "P2P"}).json()
+    assert body["model_version"] == expect and len(body["model_version"]) == 12
+    assert client.get("/health").json()["model_version"] == expect
+
+
+@needs_stack
+def test_idempotency_replays_stored_response(client):
+    good = {"sender_id": "IDEM", "receiver_id": "R", "amount": 100, "channel": "app",
+            "device_id": "D", "location": "Dhaka", "timestamp": "2026-08-15T12:00:00", "type": "P2P"}
+    h = {"Idempotency-Key": "idem-test-1"}
+    r1 = client.post("/score", json=good, headers=h).json()
+    r2 = client.post("/score", json=good, headers=h).json()
+    assert r1["deduplicated"] is False and r2["deduplicated"] is True
+    assert r1["txn_id"] == r2["txn_id"]
+    r3 = client.post("/score", json=good, headers={"Idempotency-Key": "idem-test-2"}).json()
+    assert r3["txn_id"] != r1["txn_id"] and r3["deduplicated"] is False
+
+
+def test_artifact_checksums_enforced(tmp_path):
+    import json
+    import shutil
+    from models import infer
+    shutil.copytree("artifacts", tmp_path / "art", dirs_exist_ok=True)
+    (tmp_path / "art" / "fraud_nodes.json").write_text('["tampered"]')
+    try:
+        infer.load_artifacts(tmp_path / "art")
+        raise AssertionError("tampered artifacts must not load")
+    except RuntimeError as e:
+        assert "checksum mismatch" in str(e)
+    for f in (tmp_path / "art").glob("*"):
+        if f.name != "sha256sums.json":
+            continue
+        f.unlink()
+    infer.load_artifacts(tmp_path / "art")  # legacy: warns, loads
+
+
+@needs_stack
 def test_explanation_backfill_chain(client):
     """Sparse-rule row must still yield 3 reasons via SHAP or importance fallback."""
     from features.build import FEATURE_COLS

@@ -20,13 +20,39 @@ _calib: np.ndarray | None = None
 _feature_importance: dict[str, float] = {}
 _explainer = None  # lazy SHAP TreeExplainer (built on first explained row)
 _explainer_broken = False  # set when shap/model combo fails — don't retry
+MODEL_VERSION = "unknown"
+
+
+def _verify_checksums(art_dir: Path) -> None:
+    """Fail closed on tampered artifacts (joblib pickle can execute code).
+    Artifacts trained before the manifest existed warn once and load."""
+    import hashlib
+    import logging
+    manifest = art_dir / "sha256sums.json"
+    if not manifest.exists():
+        logging.getLogger("vigil").warning("artifacts lack sha256sums.json (legacy); skipping integrity check")
+        return
+    expected = json.loads(manifest.read_text())
+    for name, want in expected.items():
+        p = art_dir / name
+        if not p.exists():
+            raise RuntimeError(f"artifact missing: {name}")
+        got = hashlib.sha256(p.read_bytes()).hexdigest()
+        if got != want:
+            raise RuntimeError(f"artifact checksum mismatch: {name}")
 
 
 def load_artifacts(art_dir: str | Path = ART):
-    global _clf, _iso, _calib, _feature_importance, _explainer, _explainer_broken
+    global _clf, _iso, _calib, _feature_importance, _explainer, _explainer_broken, MODEL_VERSION
     _explainer = None  # model changed — rebuild lazily
     _explainer_broken = False
     art_dir = Path(art_dir)
+    _verify_checksums(art_dir)
+    try:
+        MODEL_VERSION = json.loads((art_dir / "metrics.json").read_text()).get(
+            "model_version", "unknown")
+    except Exception:
+        MODEL_VERSION = "unknown"
     _clf = joblib.load(art_dir / "classifier.pkl")
     _iso = joblib.load(art_dir / "anomaly.pkl")
     cols = json.loads((art_dir / "feature_cols.json").read_text())

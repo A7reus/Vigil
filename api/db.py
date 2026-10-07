@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS decisions (
   decision TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
   at TEXT NOT NULL,
+  model_version TEXT NOT NULL DEFAULT '',
   UNIQUE (txn_id, analyst)
 );
 CREATE TABLE IF NOT EXISTS idempotency (
@@ -90,6 +91,10 @@ def configure(path: str | Path | None = None) -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.executescript(SCHEMA)
+        try:  # migrate pre-versioning databases in place
+            _conn.execute("ALTER TABLE decisions ADD COLUMN model_version TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         _path = p
         return _conn
 
@@ -243,7 +248,8 @@ def set_case_status(txn_id: str, status: str, analyst: str | None = None) -> boo
 
 
 # --- decisions -----------------------------------------------------------
-def upsert_decision(txn_id: str, analyst: str, decision: str, note: str = "") -> tuple[dict, bool]:
+def upsert_decision(txn_id: str, analyst: str, decision: str, note: str = "",
+                    model_version: str = "") -> tuple[dict, bool]:
     """Returns (entry, updated?). Replaces the old in-memory upsert loop."""
     now = utcnow()
     c = conn()
@@ -252,13 +258,14 @@ def upsert_decision(txn_id: str, analyst: str, decision: str, note: str = "") ->
                         (txn_id, analyst))
         row = cur.fetchone()
         if row:
-            c.execute("UPDATE decisions SET decision = ?, note = ?, at = ? WHERE id = ?",
-                      (decision, note, now, row["id"]))
+            c.execute("UPDATE decisions SET decision = ?, note = ?, at = ?, model_version = ?"
+                      " WHERE id = ?", (decision, note, now, model_version, row["id"]))
             c.commit()
             updated = True
         else:
-            c.execute("INSERT INTO decisions (txn_id, analyst, decision, note, at)"
-                      " VALUES (?, ?, ?, ?, ?)", (txn_id, analyst, decision, note, now))
+            c.execute("INSERT INTO decisions (txn_id, analyst, decision, note, at, model_version)"
+                      " VALUES (?, ?, ?, ?, ?, ?)",
+                      (txn_id, analyst, decision, note, now, model_version))
             c.commit()
             updated = False
         entry = _row(c.execute(
