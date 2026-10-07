@@ -32,11 +32,14 @@ def fraud_nodes(txns: pd.DataFrame) -> set:
 
 def network_risk(receiver: str, g: nx.DiGraph, fraud: set,
                  k_threshold: int = 3, boost_per_hit: float = 0.15,
-                 max_boost: float = 0.30, max_sample: int = 10) -> dict:
+                 max_boost: float = 0.30, max_sample: int = 10,
+                 max_visits: int = 20000) -> dict:
     """BFS 2 hops on the undirected view from receiver; count fraud neighbors.
 
     Returns a small sample of fraud neighbor IDs so the analyst console can
-    render the mule-ring without a separate graph query.
+    render the mule-ring without a separate graph query. max_visits bounds
+    work against super-nodes (popular merchants) so one request cannot
+    stall the worker.
     """
     if receiver not in g:
         return {"boost": 0.0, "fraud_neighbors_2hop": 0,
@@ -46,12 +49,16 @@ def network_risk(receiver: str, g: nx.DiGraph, fraud: set,
     q = deque([(receiver, 0)])
     hits = 0
     direct = False
+    visits = 0
     sample: list[str] = []
     while q:
         node, d = q.popleft()
         if d >= 2:
             continue
         for nb in ug.neighbors(node):
+            visits += 1
+            if visits > max_visits:
+                break
             if nb in seen:
                 continue
             seen.add(nb)
@@ -62,6 +69,8 @@ def network_risk(receiver: str, g: nx.DiGraph, fraud: set,
                 if len(sample) < max_sample:
                     sample.append(str(nb))
             q.append((nb, d + 1))
+        if visits > max_visits:
+            break
     boost = min(hits * boost_per_hit, max_boost) if hits >= k_threshold else 0.0
     # small partial credit for direct proximity even below threshold
     if hits > 0 and hits < k_threshold and direct:

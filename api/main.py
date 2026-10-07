@@ -201,6 +201,36 @@ def health():
             "queue_size": len(alert_cache), "startup": startup_info}
 
 
+@app.get("/ready")
+def ready():
+    """Readiness (can serve real scores?) vs /health liveness (is it up?).
+
+    Returns 503 with per-check detail when anything required is missing, so
+    orchestrators and shadow-mode harnesses can gate traffic correctly.
+    """
+    from fastapi.responses import JSONResponse
+    checks: dict[str, bool | str] = {}
+    try:
+        infer.load_artifacts()
+        checks["artifacts"] = True
+    except Exception as e:
+        checks["artifacts"] = f"missing: {e}"
+    checks["history"] = bool(store is not None and len(store.txns) > 0)
+    checks["graph"] = bool(graph is not None and graph.number_of_nodes() > 0)
+    try:
+        assert store is not None
+        probe = store.featurize({"sender_id": "__probe__", "receiver_id": "__probe__",
+                                 "amount": 100.0, "channel": "app", "device_id": "x",
+                                 "location": "Dhaka", "timestamp": "2026-08-15T12:00:00",
+                                 "type": "P2P"})
+        infer.score_features(probe, 0.0)
+        checks["canary_score"] = True
+    except Exception as e:
+        checks["canary_score"] = f"failed: {type(e).__name__}"
+    ok = all(v is True for v in checks.values())
+    return JSONResponse({"ready": ok, "checks": checks}, status_code=200 if ok else 503)
+
+
 @app.get("/metrics")
 def metrics():
     """Lightweight ops counters (monitoring expectation in the guideline)."""
@@ -421,14 +451,28 @@ def score(req: ScoreRequest, request: Request, commit: bool = False):
         committer = auth.need_user(request)
     t0 = time.perf_counter()
     txn = req.model_dump()
-    feats = store.featurize(txn)
-    cfg = get_config()
-    gf = network_risk(txn["receiver_id"], graph, fraud_set,
-                      k_threshold=cfg["graph"]["two_hop_fraud_neighbors_threshold"],
-                      boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])
-    s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
-    d = decide(s["risk_score"])
-    nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
+    degraded, derr = False, ""
+    try:
+        feats = store.featurize(txn)
+        cfg = get_config()
+        gf = network_risk(txn["receiver_id"], graph, fraud_set,
+                          k_threshold=cfg["graph"]["two_hop_fraud_neighbors_threshold"],
+                          boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])
+        s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
+        d = decide(s["risk_score"])
+        nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
+    except Exception as e:
+        # Item 6: fail closed to human review, never silently allow.
+        log.exception("score pipeline failed, degrading to review")
+        degraded, derr = True, f"{type(e).__name__}"
+        s = {"p_fraud": 0.0, "anomaly": 0.0, "graph_boost": 0.0, "risk_score": 0.60,
+             "top_3_reasons": [f"scoring degraded ({derr}); human review required"]}
+        d = {"risk_level": "Medium", "recommended_action": "review"}
+        gf = {"boost": 0.0, "fraud_neighbors_2hop": 0, "fraud_neighbor_sample": []}
+        feats = {}
+        nar = {"narrative": (f"Scoring is degraded ({derr}); this transfer could not be "
+                            "evaluated automatically. Hold for human review."), "llm_used": False,
+                 "faithful": True, "template": "degraded-fallback", "lang": req.lang}
     txn_id = f"LIVE-{uuid4().hex[:8]}"
     row = {"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
            "amount": txn["amount"], "type": txn.get("type", "P2P"), "timestamp": txn["timestamp"],
@@ -449,9 +493,11 @@ def score(req: ScoreRequest, request: Request, commit: bool = False):
         live_cases.pop(next(iter(live_cases)))
     latency_ms = (time.perf_counter() - t0) * 1000
     request_count += 1
-    log.info("score %s -> %.3f %s (%.1fms)", txn_id, s["risk_score"], d["risk_level"], latency_ms)
+    log.info("score %s -> %.3f %s (%.1fms degraded=%s)", txn_id, s["risk_score"],
+             d["risk_level"], latency_ms, degraded)
     return {"txn_id": txn_id, "risk_score": s["risk_score"], "risk_level": d["risk_level"],
             "top_3_reasons": s["top_3_reasons"], "recommended_action": d["recommended_action"],
+            "degraded": degraded,
             "components": {**{k: s[k] for k in ("p_fraud", "anomaly", "graph_boost")},
                             "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
                             "fraud_neighbor_sample": gf.get("fraud_neighbor_sample", []),

@@ -157,6 +157,44 @@ def test_env_example_contract():
         "real-looking secret in .env.example"
 
 
+def test_degraded_mode_fails_closed_to_review(monkeypatch, client):
+    import models.infer as infer
+
+    def _boom(*a, **k):
+        raise RuntimeError("model exploded")
+
+    monkeypatch.setattr(infer, "score_features", _boom)
+    r = client.post("/score", json={"sender_id": "DG", "receiver_id": "R", "amount": 100,
+                                    "channel": "app", "device_id": "D", "location": "Dhaka",
+                                    "timestamp": "2026-08-15T12:00:00", "type": "P2P"})
+    assert r.status_code == 200  # never 500, never silent allow
+    body = r.json()
+    assert body["degraded"] is True and body["risk_level"] == "Medium"
+    assert body["recommended_action"] == "review"
+
+
+def test_readiness_probe(client):
+    r = client.get("/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ready"] is True
+    assert all(v is True for v in body["checks"].values())
+
+
+def test_graph_visit_cap():
+    import networkx as nx
+    from models.graph import network_risk
+    g = nx.DiGraph()
+    g.add_edge("HUB", "R")
+    for i in range(5000):
+        g.add_edge("HUB", f"N{i}")
+    import time
+    t0 = time.perf_counter()
+    out = network_risk("R", g, set(), max_visits=1000)
+    assert time.perf_counter() - t0 < 5.0
+    assert out["boost"] == 0.0
+
+
 def test_rate_limit_429s(monkeypatch, client):
     # Finding 4 (flood): per-IP bucket trips with a JSON 429, restores after.
     import api.main as main
