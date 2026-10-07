@@ -357,6 +357,23 @@ def _known_txn_ids() -> set:
     return ids
 
 
+_TXN_KEYS = ("sender_id", "receiver_id", "amount", "channel", "device_id",
+             "location", "timestamp", "type")
+
+
+def _txn_snapshot(txn_id: str) -> dict:
+    """Scored-transfer fields for the decision audit row, so retraining can
+    rebuild the example later — including LIVE ids that never entered
+    committed history (their only trace is this snapshot)."""
+    for r in alert_cache:
+        if r["txn_id"] == txn_id:
+            return {k: r.get(k) for k in _TXN_KEYS}
+    live = live_cases.get(txn_id)
+    if live is not None:
+        return {k: live["txn"].get(k) for k in _TXN_KEYS}
+    return {}
+
+
 @app.post("/score")
 def score(req: ScoreRequest, request: Request, commit: bool = False):
     global request_count
@@ -520,7 +537,8 @@ def decision(req: DecisionRequest, request: Request):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
-    entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()}
+    entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat(),
+             "txn": json.dumps(_txn_snapshot(req.txn_id), default=str)}
     updated = decision_log.upsert(entry)
     log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, req.analyst, updated)
     return {"ok": True, "updated": updated, "logged": req.model_dump(),
