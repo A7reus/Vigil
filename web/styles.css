@@ -457,6 +457,41 @@ footer { padding: 0.5rem 1.5rem 1.6rem; color: var(--faint); font-size: 0.8rem; 
 .raw summary { cursor: pointer; color: var(--dim); font-size: 0.8rem; }
 .raw pre { margin: 0.5rem 0 0; padding: 0.7rem; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r-well); font-family: var(--mono); font-size: 0.76rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
 
+/* ---------- Auth gate ---------- */
+.auth-overlay {
+  position: fixed; inset: 0; z-index: 9600; display: grid; place-items: center;
+  padding: 1rem; background: var(--scrim); backdrop-filter: blur(2px); overflow: auto;
+}
+.auth-overlay[hidden] { display: none; }
+.auth-card {
+  width: min(400px, 100%); background: var(--desk); border: 1px solid var(--rule-strong);
+  border-top: 3px solid var(--brand); border-radius: var(--r-panel);
+  padding: 1.6rem 1.5rem; box-shadow: var(--shadow); text-align: center;
+}
+.auth-card .logo { width: 2.6rem; height: 2.6rem; color: var(--brand); }
+.auth-card h2 { font-size: 1.25rem; margin: 0.5rem 0 0.25rem; }
+.auth-card .seg { margin: 0.9rem auto; }
+.auth-card form { display: grid; gap: 0.6rem; text-align: left; margin-top: 0.4rem; }
+.btn.wide { width: 100%; }
+.user-chip {
+  display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.3rem 0.3rem 0.7rem;
+  border: 1px solid var(--rule); border-radius: 999px; font-size: 0.82rem; background: var(--desk);
+}
+.user-chip .badge { font-size: 0.68rem; }
+
+/* ---------- Admin dashboard ---------- */
+.admin-pane { max-width: 1640px; margin: 0 auto; padding: 1rem 1.5rem; }
+.admin-pane .pane-head .btn { margin-left: auto; }
+.admin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.admin-card {
+  background: var(--desk); border: 1px solid var(--rule); border-radius: var(--r-panel);
+  padding: 1rem 1.1rem; min-width: 0;
+}
+.admin-card.wide { grid-column: 1 / -1; }
+.admin-card h3 { font-size: 0.95rem; margin: 0 0 0.7rem; }
+.admin-card h3 small { color: var(--faint); font-weight: 400; }
+@media (max-width: 900px) { .admin-grid { grid-template-columns: 1fr; } }
+
 /* ---------- Toasts ---------- */
 .toasts { position: fixed; z-index: 9800; right: 16px; bottom: 16px; display: grid; gap: 0.5rem; max-width: min(380px, calc(100vw - 32px)); }
 .toast {

@@ -31,11 +31,23 @@ const LEVELS = ['High', 'Medium', 'Low'];
 const safeLevel = (l) => (LEVELS.includes(l) ? l : 'Low');
 
 /* ---------- Network ---------- */
-async function api(path, opts) {
-  const r = await fetch(path, opts);
+const auth = {
+  user: null,
+  get token() { try { return localStorage.getItem('vigil_token'); } catch (e) { return null; } },
+  set token(t) {
+    try { t ? localStorage.setItem('vigil_token', t) : localStorage.removeItem('vigil_token'); }
+    catch (e) {}
+  },
+};
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (auth.token && !headers.Authorization) headers.Authorization = 'Bearer ' + auth.token;
+  const r = await fetch(path, { ...opts, headers });
   if (!r.ok) {
     const txt = await r.text().catch(() => '');
-    throw new Error(`${path} -> ${r.status} ${txt.slice(0, 160)}`);
+    const err = new Error(`${path} -> ${r.status} ${txt.slice(0, 160)}`);
+    err.status = r.status;
+    throw err;
   }
   return r.json();
 }
@@ -455,7 +467,7 @@ async function sendDecision(decision) {
   try {
     await api('/decision', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ txn_id: id, decision, analyst: 'analyst-1' }),
+      body: JSON.stringify({ txn_id: id, decision, analyst: auth.user ? auth.user.username : 'analyst-1' }),
     });
     const rowsBefore = visibleRows();
     const idx = rowsBefore.findIndex((r) => r.txn_id === id);
@@ -699,11 +711,211 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-/* ---------- Boot ---------- */
-checkHealth();
-loadQueue().then(() => {
-  if (!tourAutoTried) {
-    tourAutoTried = true;
-    if (!tourSeen()) startTour();
+/* ---------- Auth views + RBAC ---------- */
+function showView(name) {
+  $('authView').hidden = name !== 'auth';
+  $('analystView').hidden = name !== 'analyst';
+  $('adminView').hidden = name !== 'admin';
+}
+function paintUser() {
+  const u = auth.user;
+  $('userChip').hidden = !u;
+  $('logoutBtn').hidden = !u;
+  $('adminTab').hidden = !(u && u.role === 'admin');
+  if (u) {
+    $('userName').textContent = u.username;
+    $('userRole').textContent = u.role;
+    $('userRole').className = 'badge ' + (u.role === 'admin' ? 'High' : 'Low');
+  }
+}
+function showAuth(which = 'login', msg = '') {
+  showView('auth');
+  $('tabLogin').setAttribute('aria-pressed', which === 'login');
+  $('tabRegister').setAttribute('aria-pressed', which === 'register');
+  $('loginForm').hidden = which !== 'login';
+  $('registerForm').hidden = which !== 'register';
+  $('pendingNote').hidden = true;
+  showFormMsg('authError', which === 'login' ? msg : '');
+  showFormMsg('regError', which === 'register' ? msg : '');
+}
+function showFormMsg(id, msg) {
+  const el = $(id);
+  el.hidden = !msg;
+  el.textContent = msg || '';
+}
+function enterAnalyst() {
+  showView('analyst');
+  paintUser();
+  checkHealth();
+  loadQueue().then(() => {
+    if (!tourAutoTried) {
+      tourAutoTried = true;
+      if (!tourSeen()) startTour();
+    }
+  });
+}
+function enterAdmin() {
+  showView('admin');
+  paintUser();
+  checkHealth();
+  loadAdmin();
+}
+$('tabLogin').addEventListener('click', () => showAuth('login'));
+$('tabRegister').addEventListener('click', () => showAuth('register'));
+$('adminTab').addEventListener('click', enterAdmin);
+$('consoleTab').addEventListener('click', enterAnalyst);
+$('logoutBtn').addEventListener('click', () => {
+  if (auth.token) api('/auth/logout', { method: 'POST' }).catch(() => {});
+  auth.token = null;
+  auth.user = null;
+  state.selectedId = null;
+  state.decided = {};
+  showAuth('login');
+  paintUser();
+});
+$('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showFormMsg('authError', '');
+  const fd = new FormData(e.target);
+  try {
+    const out = await api('/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: String(fd.get('username')).trim(), password: String(fd.get('password')) }),
+    });
+    auth.token = out.token;
+    auth.user = out.user;
+    toast(`Signed in as ${out.user.username} (${out.user.role})`, 'ok', 2200);
+    if (out.user.role === 'admin') enterAdmin(); else enterAnalyst();
+  } catch (err) {
+    showFormMsg('authError', err.status === 403 ? 'Account pending admin approval.' : 'Sign-in failed. Check your username and password.');
   }
 });
+$('registerForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showFormMsg('regError', '');
+  const fd = new FormData(e.target);
+  try {
+    await api('/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: String(fd.get('username')).trim(), password: String(fd.get('password')) }),
+    });
+    $('registerForm').hidden = true;
+    $('pendingNote').hidden = false;
+  } catch (err) {
+    showFormMsg('regError', err.status === 409 ? 'That username is taken.' : 'Registration failed. Use 3-32 chars and a password of 8+.');
+  }
+});
+
+/* ---------- Admin dashboard ---------- */
+async function adminApi(path, opts) {
+  try {
+    return await api(path, opts);
+  } catch (err) {
+    if (err.status === 401 || err.status === 403) {
+      auth.token = null;
+      auth.user = null;
+      showAuth('login', 'Session expired. Sign in again.');
+      throw err;
+    }
+    throw err;
+  }
+}
+async function loadAdmin() {
+  const [users, reviews, cases] = await Promise.all([
+    adminApi('/admin/users').then((d) => d.users),
+    adminApi('/admin/decisions?limit=200').then((d) => d.decisions),
+    adminApi('/admin/cases?limit=200').then((d) => d.cases),
+  ]);
+  renderUsers(users);
+  renderReviews(reviews);
+  renderCases(cases);
+}
+function renderUsers(users) {
+  const pending = users.filter((u) => u.status === 'pending');
+  $('pendingCount').textContent = pending.length ? `· ${pending.length} waiting` : '';
+  $('pendingBody').innerHTML = pending.length ? pending.map((u) => `
+    <tr><td><code>${esc(u.username)}</code></td><td class="muted">${esc(u.created_at.slice(0, 10))}</td>
+    <td><button type="button" class="btn" data-approve="${u.id}">Approve</button></td></tr>`).join('')
+    : '<tr class="state-row"><td colspan="3">No pending registrations.</td></tr>';
+  $('usersBody').innerHTML = users.map((u) => `
+    <tr><td><code>${esc(u.username)}</code></td><td>${esc(u.role)}</td>
+    <td><span class="badge ${u.status === 'active' ? 'Low' : u.status === 'pending' ? 'Medium' : 'High'}">${esc(u.status)}</span></td>
+    <td>${u.status === 'active' && u.username !== auth.user?.username
+      ? `<button type="button" class="btn" data-disable="${u.id}">Disable</button>`
+      : u.status === 'disabled' ? `<button type="button" class="btn" data-enable="${u.id}">Enable</button>` : '<span class="muted">—</span>'}</td></tr>`).join('');
+  $('pendingBody').querySelectorAll('[data-approve]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await adminApi(`/admin/users/${b.dataset.approve}/approve`, { method: 'POST' });
+      toast('User approved', 'ok', 2000);
+      loadAdmin();
+    }));
+  $('usersBody').querySelectorAll('[data-disable]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await adminApi(`/admin/users/${b.dataset.disable}/disable`, { method: 'POST' });
+      loadAdmin();
+    }));
+  $('usersBody').querySelectorAll('[data-enable]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await adminApi(`/admin/users/${b.dataset.enable}/enable`, { method: 'POST' });
+      loadAdmin();
+    }));
+}
+let allReviews = [];
+function renderReviews(reviews) {
+  allReviews = reviews;
+  drawReviews();
+}
+function drawReviews() {
+  const f = ($('revFilter').value || '').toLowerCase();
+  const rows = allReviews.filter((r) => !f || String(r.analyst || '').toLowerCase().includes(f));
+  $('reviewsBody').innerHTML = rows.length ? rows.map((r) => `
+    <tr><td><code>${esc(r.txn_id)}</code></td><td>${esc(r.analyst)}</td>
+    <td><span class="badge ${r.decision === 'freeze' ? 'High' : r.decision === 'step-up' ? 'Medium' : 'Low'}">${esc(r.decision)}</span></td>
+    <td class="muted">${esc(r.note || '—')}</td><td class="muted">${esc((r.at || '').slice(0, 16).replace('T', ' '))}</td></tr>`).join('')
+    : '<tr class="state-row"><td colspan="5">No reviews yet.</td></tr>';
+}
+$('revFilter').addEventListener('input', drawReviews);
+async function loadCases() {
+  const status = $('caseStatusFilter').value;
+  const q = status ? `?status=${status}` : '';
+  const cases = await adminApi(`/admin/cases${q}`).then((d) => d.cases);
+  $('casesBody').innerHTML = cases.length ? cases.map((c) => `
+    <tr><td><code>${esc(c.txn_id)}</code></td><td><strong class="score-num">${Number(c.risk_score).toFixed(2)}</strong></td>
+    <td>${esc(c.status || 'open')}</td><td>${esc(c.assignee || '—')}</td>
+    <td>${c.status !== 'closed' ? `<button type="button" class="btn" data-assign="${esc(c.txn_id)}">Take</button>
+      <button type="button" class="btn" data-close="${esc(c.txn_id)}">Close</button>` : '<span class="muted">—</span>'}</td></tr>`).join('')
+    : '<tr class="state-row"><td colspan="5">No cases with this status.</td></tr>';
+  $('casesBody').querySelectorAll('[data-assign]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await adminApi(`/cases/${encodeURIComponent(b.dataset.assign)}/assign`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analyst: auth.user.username }),
+      });
+      loadCases();
+    }));
+  $('casesBody').querySelectorAll('[data-close]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await adminApi(`/cases/${encodeURIComponent(b.dataset.close)}/status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      loadCases();
+    }));
+}
+$('caseStatusFilter').addEventListener('change', loadCases);
+
+/* ---------- Boot ---------- */
+(async function boot() {
+  paintUser();
+  if (auth.token) {
+    try {
+      const me = await api('/auth/me');
+      auth.user = me.user;
+      if (me.user.role === 'admin') { enterAdmin(); return; }
+      enterAnalyst();
+      return;
+    } catch (e) { auth.token = null; }
+  }
+  showAuth('login');
+  checkHealth();
+})();
