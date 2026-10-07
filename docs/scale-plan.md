@@ -7,7 +7,8 @@
 - [x] Measurable benefit (`eval.business`: loss prevented BDT + minutes saved per 1000 holds)
 - [~] Validatable with real data (same API contract; needs governed labels, a future step)
 - [x] Privacy/fairness/explainability addressed (see `security.md`)
-- [~] Integratable (stateless FastAPI plus `/metrics`; needs auth, queueing, and idempotency for prod)
+- [~] Integratable (stateless FastAPI plus `/metrics`; key auth on writes landed,
+  queueing and idempotency remain for prod)
 
 ## Post-hackathon pathway
 1. Competition → prototype + `docs/eval-sample.json` + console
@@ -29,3 +30,12 @@ Thresholds stay in `config/thresholds.yaml` so ops tunes without ML deploys.
 versus 15 minutes manual (13 minutes saved each). Replace 2 and 15 with measured
 times during the pilot, then multiply by loaded analyst hourly cost for ROI.
 False holds cost customer friction, so track appeal rate alongside precision.
+
+## Measured load (dev box, 2026-10-07)
+`python -m scripts.load_test --n 500 --concurrency 8` against `/score`
+(template narrative path — the local model was still downloading):
+single request ~80ms; at 8-way concurrency 500/500 ok, 13.5 rps,
+p50 600ms, p95 750ms. Contention is Python-side (pandas featurize + SHAP
+under threads), so headroom comes from workers/processes, not bigger boxes.
+With the default 120/min rate limit on, the same probe returns exactly 120
+oks then JSON 429s — the flood guard, working as specified.

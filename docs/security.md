@@ -26,12 +26,15 @@ before any enforcement; never auto-tune on unreviewed labels.
 ## Security
 - CORS `*` is demo-only (see code comment in `api/main.py`); restrict to the
   deployed frontend domain for anything beyond the hackathon.
-- Auth: none by design for judging; compensated by (a) LIVE isolation, which keeps
+- Auth: open by default for judging, locked by `VIGIL_API_KEY` (shared secret,
+  sent as `X-API-Key` on `POST /score` + `POST /decision`) anywhere exposed;
+  reads stay open. Compensated by (a) LIVE isolation, which keeps
   unreviewed `/score` traffic is scoring-neutral (separate capped buffer,
   excluded from features/seen-sets/graph/history eviction), (b) per-IP rate
   limiting on `/score` + `/decision` (`VIGIL_RATE_LIMIT_PER_MIN`, default 120,
   0 disables; 429 JSON), (c) strict input bounds (lengths, timestamp range,
-  finite JSON enforced by middleware). Add API keys before any pilot.
+  finite JSON enforced by middleware). The console sends no key, so it pairs
+  with the open default; keyed deployments use service clients.
 - Ground truth: `/alerts` and `/case` never expose training labels.
 - Decisions persist in SQLite (`VIGIL_DECISIONS_DB`, default
   `data/decisions.db`): unknown `txn_id` → 404; same analyst+txn upserts

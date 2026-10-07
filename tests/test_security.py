@@ -180,3 +180,23 @@ def test_rate_limit_429s(monkeypatch, client):
     finally:
         monkeypatch.setenv("VIGIL_RATE_LIMIT_PER_MIN", "120")
         main._rate_hits.clear()
+
+
+@needs_stack
+def test_api_key_gates_writes_only_when_set(monkeypatch, client):
+    # Open by default (judging demos); locked when VIGIL_API_KEY is set.
+    assert client.post("/score", json=_score_body()).status_code == 200
+    monkeypatch.setenv("VIGIL_API_KEY", "venue-secret")
+    try:
+        assert client.post("/score", json=_score_body()).status_code == 401
+        tid = client.get("/alerts?limit=1").json()["alerts"][0]["txn_id"]
+        no_key = client.post("/decision", json={"txn_id": tid, "decision": "allow"})
+        assert no_key.status_code == 401
+        headers = {"X-API-Key": "venue-secret"}
+        assert client.post("/score", json=_score_body(), headers=headers).status_code == 200
+        r = client.post("/decision", json={"txn_id": tid, "decision": "allow",
+                                           "analyst": "key-test"}, headers=headers)
+        assert r.status_code == 200
+        assert client.get("/alerts?limit=1").status_code == 200  # reads stay open
+    finally:
+        monkeypatch.delenv("VIGIL_API_KEY", raising=False)

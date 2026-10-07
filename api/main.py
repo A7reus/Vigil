@@ -202,6 +202,16 @@ MAX_LIVE_CASES = 500
 _rate_hits: dict[str, list[float]] = {}
 
 
+def _require_key(request: Request) -> None:
+    """Shared-secret auth for writes. Empty key = open (judging demos);
+    set VIGIL_API_KEY anywhere exposed — clients send it as X-API-Key."""
+    want = os.getenv("VIGIL_API_KEY", "")
+    if not want:
+        return
+    if request.headers.get("x-api-key") != want:
+        raise HTTPException(401, "missing or wrong X-API-Key")
+
+
 def _rate_limit_ok(ip: str) -> bool:
     try:
         limit = int(os.getenv("VIGIL_RATE_LIMIT_PER_MIN", "120"))
@@ -229,6 +239,7 @@ def _known_txn_ids() -> set:
 def score(req: ScoreRequest, request: Request):
     global request_count
     assert store is not None and graph is not None
+    _require_key(request)
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     t0 = time.perf_counter()
@@ -319,6 +330,7 @@ def case(txn_id: str, lang: str = "en"):
 @app.post("/decision")
 def decision(req: DecisionRequest, request: Request):
     assert store is not None and decision_log is not None
+    _require_key(request)
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
