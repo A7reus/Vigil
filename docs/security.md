@@ -2,7 +2,14 @@
 
 ## Privacy
 Synthetic-only during hackathon (`data_gen/`); no production data, no PII.
-`data/` + `artifacts/` git-ignored; secrets via env (`LLM_API_KEY`), placeholders in README.
+`data/` + `artifacts/` git-ignored; the analyst secret (if set) via env (`VIGIL_API_KEY`), placeholders in README.
+
+Case evidence never leaves the building. Narratives are written by a local
+model through Ollama (`OLLAMA_HOST` defaults to localhost; there is no remote
+endpoint to configure and no key to leak). This is deliberate: MFS case data
+cannot cross borders, so the design removes the crossing instead of guarding
+it. Daemon down just means template narratives — the offline fallback judges
+already saw, now as the everyday path rather than the exception.
 
 ## Explainability
 Every score ships `top_3_reasons` (auditable rules first, then model importance)
@@ -25,15 +32,22 @@ unreviewed labels.
 ## Security
 - CORS `*` is demo-only (see code comment in `api/main.py`); restrict to the
   deployed frontend domain for anything beyond the hackathon.
-- Auth: password login (PBKDF2) with opaque revocable bearer tokens;
-  registration is pending until admin approval; roles analyst/admin enforced
-  server-side on every privileged route. Anonymous scoring stays open for
-  judges, compensated by (a) LIVE isolation (scoring-neutral buffer), (b)
-  per-IP rate limiting (`VIGIL_RATE_LIMIT_PER_MIN`, 429 JSON), (c) strict
-  input bounds. Service API keys are a pilot-backlog item.
+- Auth: open by default for judging, locked by `VIGIL_API_KEY` (shared secret,
+  sent as `X-API-Key` on `POST /score` + `POST /decision`) anywhere exposed;
+  reads stay open. Compensated by (a) LIVE isolation, which keeps
+  unreviewed `/score` traffic is scoring-neutral (separate capped buffer,
+  excluded from features/seen-sets/graph/history eviction), (b) per-IP rate
+  limiting on `/score` + `/decision` (`VIGIL_RATE_LIMIT_PER_MIN`, default 120,
+  0 disables; 429 JSON), (c) strict input bounds (lengths, timestamp range,
+  finite JSON enforced by middleware). The console sends no key, so it pairs
+  with the open default; keyed deployments use service clients.
 - Ground truth: `/alerts` and `/case` never expose training labels.
-- Decisions: unknown `txn_id` → 404; same analyst+txn upserts instead of
-  duplicating; notes capped at 500 chars.
+- Decisions live in Postgres (`DATABASE_URL`, required — boot fails without
+  it): unknown `txn_id` → 404; same analyst+txn upserts instead of
+  duplicating; notes capped at 500 chars; the log survives sleeps, restarts,
+  and redeploys, and feeds the retrain queue (`pending_retrain`). Local dev
+  uses a throwaway container, CI a service, hosted Render the managed
+  database — same contract everywhere.
 - Prompt injection: raw fields are sanitized (`_safe()` strips control chars,
   caps at 120) before prompts/narratives, and the system instruction treats
   evidence values as untrusted data. High-impact actions still require analyst

@@ -48,7 +48,6 @@ class HistoryStore:
             self.seen_recv[r["sender"]].add(r["receiver"])
             self.seen_dev[r["sender"]].add(r["device_id"])
             self.seen_loc[r["sender"]].add(r["location"])
-        self.decisions: list[dict] = []
         self.live_rows: list[dict] = []
         # Rolling scoring state (item 3): per-sender (ts, amount) events plus
         # all-time sum/count/max for the average and idle-time features;

@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api import auth, db
+from api.decisions import DecisionLog
 from api.llm import narrate
 from api.rules import decide, get_config
 from api.schemas import (CaseAssignRequest, CaseStatusRequest, DecisionRequest,
@@ -79,11 +79,12 @@ fraud_set: set = set()
 alert_cache: list[dict] = []
 startup_info: dict = {}
 request_count: int = 0
+decision_log: DecisionLog | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, graph, fraud_set, alert_cache, startup_info
+    global store, graph, fraud_set, alert_cache, startup_info, decision_log
     t0 = time.perf_counter()
     get_config()
     try:
@@ -96,6 +97,9 @@ async def lifespan(app: FastAPI):
             "then start the API."
         ) from e
     store = HistoryStore()
+    # Audit trail lives in Postgres (DATABASE_URL required — fail fast here,
+    # not mid-demo). Replaces the phase-1 process-local list.
+    decision_log = DecisionLog()
     if len(store.txns) == 0:
         log.warning("no transaction history found in data/ — queue will be empty until data is generated")
     tx = store.txns
@@ -241,8 +245,10 @@ async def _reject_nonfinite_json(request: Request, call_next):
     return await call_next(request)
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
+    # HEAD exists for uptime monitors (UptimeRobot pings /health that way);
+    # Starlette strips the body automatically, same 200 either way.
     return {"ok": True, "history_rows": 0 if store is None else len(store.txns),
             "graph_nodes": 0 if graph is None else graph.number_of_nodes(),
             "queue_size": len(alert_cache), "model_version": infer.MODEL_VERSION,
@@ -300,190 +306,8 @@ def metrics():
     except Exception:
         logged, open_cases = 0, len(alert_cache)
     return {"requests_scored": request_count, "queue_size": len(alert_cache),
-            "decisions_logged": logged, "open_cases": open_cases,
-            "model_version": infer.MODEL_VERSION,
-            "ops": _ops_snapshot(), "startup": startup_info}
-
-
-@app.get("/metrics/prom")
-def metrics_prom():
-    """Prometheus text exposition for the pilot dashboard."""
-    from fastapi.responses import PlainTextResponse
-    s = _ops_snapshot()
-    lines = ["# HELP vigil_scores_total Scored transactions",
-             "# TYPE vigil_scores_total counter",
-             f"vigil_scores_total {request_count}",
-             "# HELP vigil_errors_total Errors by endpoint",
-             "# TYPE vigil_errors_total counter"]
-    lines += [f'vigil_errors_total{{endpoint="{e}"}} {n}' for e, n in s["errors"].items()]
-    lines += ["# HELP vigil_score_latency_ms_p95 Scoring p95 latency",
-              "# TYPE vigil_score_latency_ms_p95 gauge",
-              f"vigil_score_latency_ms_p95 {s['score_latency_ms']['p95']}",
-              "# HELP vigil_llm_used_total Narratives from the live model",
-              "# TYPE vigil_llm_used_total counter",
-              f"vigil_llm_used_total {s['llm']['used']}",
-              "# HELP vigil_llm_fallback_total Template narratives served",
-              "# TYPE vigil_llm_fallback_total counter",
-              f"vigil_llm_fallback_total {s['llm']['fallback']}"]
-    return PlainTextResponse("\n".join(lines) + "\n")
-
-
-# --- auth: registration is pending until an admin approves -----------------
-@app.post("/auth/register", status_code=201)
-def register(req: RegisterRequest):
-    auth.check_username(req.username)
-    auth.check_password(req.password)
-    u = db.create_user(req.username, auth.hash_password(req.password))
-    if u is None:
-        raise HTTPException(409, "username already taken")
-    log.info("registered %s (pending approval)", req.username)
-    return {"user": db.public_user(u),
-            "message": "registered; awaiting admin approval before login"}
-
-
-@app.post("/auth/login")
-def login(req: LoginRequest, request: Request):
-    if not _rate_limit_ok("login:" + _client_ip(request)):
-        raise HTTPException(429, "too many login attempts, retry in a minute")
-    u = db.get_user_by_username(req.username)
-    if not u or not auth.verify_password(req.password, u["pw_hash"]):
-        raise HTTPException(401, "invalid credentials")
-    if u["status"] == "pending":
-        raise HTTPException(403, "account pending admin approval")
-    if u["status"] != "active":
-        raise HTTPException(403, "account disabled")
-    token, exp = auth.issue_token(u["id"])
-    log.info("login %s", u["username"])
-    return {"token": token, "expires_at": exp, "user": db.public_user(u)}
-
-
-@app.get("/auth/me")
-def me(request: Request):
-    return {"user": auth.need_user(request)}
-
-
-@app.post("/auth/logout")
-def logout(request: Request):
-    from api.auth import bearer_token
-    import hashlib
-    t = bearer_token(request)
-    if t:
-        db.revoke_session(hashlib.sha256(t.encode()).hexdigest())
-    return {"ok": True}
-
-
-# --- admin: users, reviews, case workflow ----------------------------------
-@app.get("/admin/users")
-def admin_users(request: Request):
-    auth.need_admin(request)
-    return {"users": db.list_users()}
-
-
-@app.post("/admin/users/{uid}/approve")
-def admin_approve(uid: int, request: Request):
-    auth.need_admin(request)
-    u = db.set_user_status(uid, "active")
-    if u is None:
-        raise HTTPException(404, "unknown user")
-    log.info("admin approved user %s", u["username"])
-    return {"user": db.public_user(u)}
-
-
-@app.post("/admin/users/{uid}/disable")
-def admin_disable(uid: int, request: Request):
-    me = auth.need_admin(request)
-    if me["id"] == uid:
-        raise HTTPException(400, "cannot disable your own admin account")
-    u = db.set_user_status(uid, "disabled")
-    if u is None:
-        raise HTTPException(404, "unknown user")
-    return {"user": db.public_user(u)}
-
-
-@app.post("/admin/users/{uid}/enable")
-def admin_enable(uid: int, request: Request):
-    auth.need_admin(request)
-    u = db.set_user_status(uid, "active")
-    if u is None:
-        raise HTTPException(404, "unknown user")
-    return {"user": db.public_user(u)}
-
-
-@app.get("/admin/decisions")
-def admin_decisions(request: Request, analyst: str | None = None, limit: int = Query(200, ge=1, le=2000)):
-    auth.need_admin(request)
-    return {"decisions": db.list_decisions(analyst=analyst, limit=limit)}
-
-
-@app.get("/admin/cases")
-def admin_cases(request: Request, status: str | None = None, analyst: str | None = None,
-                limit: int = Query(200, ge=1, le=2000)):
-    auth.need_admin(request)
-    if status and status not in ("open", "assigned", "closed"):
-        raise HTTPException(422, "status must be open|assigned|closed")
-    return {"cases": [db.row_to_public_case(r) for r in db.list_cases(status, analyst, limit)]}
-
-
-@app.post("/cases/{txn_id}/assign")
-def assign_case(txn_id: str, req: CaseAssignRequest, request: Request):
-    me = auth.need_user(request)
-    target = db.get_user_by_username(req.analyst)
-    if not target or target["status"] != "active":
-        raise HTTPException(404, "unknown or inactive analyst")
-    if me["role"] != "admin" and req.analyst != me["username"]:
-        raise HTTPException(403, "analysts may only self-assign; admins may assign anyone")
-    if not db.get_case(txn_id) and txn_id not in _known_txn_ids():
-        raise HTTPException(404, "unknown txn_id")
-    db.upsert_case(txn_id, _case_blob_or_empty(txn_id), *db_case_score(txn_id))
-    if not db.set_case_status(txn_id, "assigned", req.analyst):
-        raise HTTPException(404, "unknown txn_id")
-    log.info("case %s assigned to %s by %s", txn_id, req.analyst, me["username"])
-    return {"ok": True, "txn_id": txn_id, "analyst": req.analyst}
-
-
-@app.post("/cases/{txn_id}/status")
-def case_status(txn_id: str, req: CaseStatusRequest, request: Request):
-    me = auth.need_user(request)
-    row = db.get_case(txn_id)
-    if row is None and txn_id not in _known_txn_ids():
-        raise HTTPException(404, "unknown txn_id")
-    if req.status == "closed" and me["role"] != "admin" and (row or {}).get("analyst") != me["username"]:
-        raise HTTPException(403, "only the assignee or an admin may close a case")
-    if row is None:
-        db.upsert_case(txn_id, _case_blob_or_empty(txn_id), *db_case_score(txn_id))
-    db.set_case_status(txn_id, req.status)
-    return {"ok": True, "txn_id": txn_id, "status": req.status}
-
-
-def _case_blob_or_empty(txn_id: str) -> dict:
-    row = db.get_case(txn_id)
-    if row:
-        import json
-        try:
-            return json.loads(row["payload"])
-        except Exception:
-            pass
-    live = live_cases.get(txn_id)
-    if live:
-        return {"txn": live["txn"], "feats": live["feats"], "score": live["score"],
-                "decision": live["decision"], "graph": live["graph"]}
-    for r in alert_cache:
-        if r["txn_id"] == txn_id:
-            return _blob_for_alert(r)
-    return {}
-
-
-def db_case_score(txn_id: str) -> tuple[float, str]:
-    row = db.get_case(txn_id)
-    if row:
-        return float(row["risk_score"]), row["risk_level"]
-    live = live_cases.get(txn_id)
-    if live:
-        return float(live["score"]["risk_score"]), live["decision"]["risk_level"]
-    for r in alert_cache:
-        if r["txn_id"] == txn_id:
-            return float(r["risk_score"]), r["risk_level"]
-    return 0.0, "Low"
+            "decisions_logged": 0 if decision_log is None else len(decision_log),
+            "startup": startup_info}
 
 
 # Exact score-time state for LIVE txns (feats + graph facts), so /case/{live_id}
@@ -494,6 +318,16 @@ MAX_LIVE_CASES = 500
 # Per-IP token buckets for write endpoints (demo-grade flood protection; the
 # scoring state itself is already isolated from LIVE traffic in store.py).
 _rate_hits: dict[str, list[float]] = {}
+
+
+def _require_key(request: Request) -> None:
+    """Shared-secret auth for writes. Empty key = open (judging demos);
+    set VIGIL_API_KEY anywhere exposed — clients send it as X-API-Key."""
+    want = os.getenv("VIGIL_API_KEY", "")
+    if not want:
+        return
+    if request.headers.get("x-api-key") != want:
+        raise HTTPException(401, "missing or wrong X-API-Key")
 
 
 def _rate_limit_ok(ip: str) -> bool:
@@ -527,7 +361,8 @@ def _known_txn_ids() -> set:
 def score(req: ScoreRequest, request: Request, commit: bool = False):
     global request_count
     assert store is not None and graph is not None
-    if not _rate_limit_ok(_client_ip(request)):
+    _require_key(request)
+    if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     committer = None
     if commit:
@@ -543,29 +378,15 @@ def score(req: ScoreRequest, request: Request, commit: bool = False):
             return {**hit, "deduplicated": True}
     t0 = time.perf_counter()
     txn = req.model_dump()
-    degraded, derr = False, ""
-    try:
-        feats = store.featurize(txn)
-        cfg = get_config()
-        gf = network_risk(txn["receiver_id"], graph, fraud_set,
-                          k_threshold=cfg["graph"]["two_hop_fraud_neighbors_threshold"],
-                          boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])
-        s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
-        d = decide(s["risk_score"])
-        nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
-    except Exception as e:
-        # Item 6: fail closed to human review, never silently allow.
-        _ops["errors"]["score"] += 1
-        log.exception("score pipeline failed, degrading to review")
-        degraded, derr = True, f"{type(e).__name__}"
-        s = {"p_fraud": 0.0, "anomaly": 0.0, "graph_boost": 0.0, "risk_score": 0.60,
-             "top_3_reasons": [f"scoring degraded ({derr}); human review required"]}
-        d = {"risk_level": "Medium", "recommended_action": "review"}
-        gf = {"boost": 0.0, "fraud_neighbors_2hop": 0, "fraud_neighbor_sample": []}
-        feats = {}
-        nar = {"narrative": (f"Scoring is degraded ({derr}); this transfer could not be "
-                            "evaluated automatically. Hold for human review."), "llm_used": False,
-                 "faithful": True, "template": "degraded-fallback", "lang": req.lang}
+    feats = store.featurize(txn)
+    cfg = get_config()
+    gf = network_risk(txn["receiver_id"], graph, fraud_set,
+                      k_threshold=cfg["graph"]["two_hop_fraud_neighbors_threshold"],
+                      boost_per_hit=cfg["graph"]["boost_per_hit"], max_boost=cfg["graph"]["max_boost"])
+    s = infer.score_features(feats, gf["boost"], cfg["ensemble_weights"])
+    d = decide(s["risk_score"])
+    # Scoring path: template narrative, answered in ms (see narrate docstring).
+    nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang, live=False)
     txn_id = f"LIVE-{uuid4().hex[:8]}"
     row = {"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
            "amount": txn["amount"], "type": txn.get("type", "P2P"), "timestamp": txn["timestamp"],
@@ -693,20 +514,17 @@ def case(txn_id: str, lang: str = "en"):
 
 @app.post("/decision")
 def decision(req: DecisionRequest, request: Request):
-    assert store is not None
-    if not _rate_limit_ok(_client_ip(request)):
+    assert store is not None and decision_log is not None
+    _require_key(request)
+    if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
-    me = auth.current_user(request)
-    analyst = me["username"] if me else req.analyst
-    entry, updated = db.upsert_decision(req.txn_id, analyst, req.decision, req.note,
-                                        model_version=infer.MODEL_VERSION)
-    log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, analyst, updated)
-    return {"ok": True, "updated": updated,
-            "logged": {"txn_id": req.txn_id, "decision": req.decision,
-                       "analyst": analyst, "note": req.note},
-            "pending_retrain": db.count_decisions()}
+    entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()}
+    updated = decision_log.upsert(entry)
+    log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, req.analyst, updated)
+    return {"ok": True, "updated": updated, "logged": req.model_dump(),
+            "pending_retrain": len(decision_log)}
 
 
 # Analyst console (no build step): served from /web. API routes above take

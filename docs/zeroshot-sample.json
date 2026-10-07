@@ -1,0 +1,16 @@
+{
+  "mode": "zero-shot: frozen home model, no retraining on foreign data",
+  "home_auc": 0.9989,
+  "n_test": 3997,
+  "fraud_rate_test": 0.0368,
+  "model": {
+    "auc": 0.9992,
+    "precision@100": 1.0,
+    "recall@5%FPR": 1.0
+  },
+  "rule_baseline": {
+    "auc": 0.8346,
+    "recall@5%FPR": 0.2177
+  },
+  "eval_s": 2.4
+}

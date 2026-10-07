@@ -12,5 +12,15 @@ services:
         value: 100
       - key: VIGIL_RATE_LIMIT_PER_MIN
         value: 120
-      - key: LLM_API_KEY
-        sync: false
+      - key: OLLAMA_MODEL
+        value: qwen2.5:3b
+      # No daemon on Render free tier: the API serves template narratives.
+      # On your own box, `ollama pull qwen2.5:3b` + `ollama serve` instead.
+# Durable decisions need Postgres (free disks are wiped on sleep/redeploy):
+# Dashboard → New → PostgreSQL (free, 30-day expiry covers judging; $6/mo
+# after) → Connect to this service so Render injects DATABASE_URL. The API
+# refuses to boot without it — by design, so a missing database is a loud
+# startup error instead of a silently amnesiac audit trail.
+#databases:
+#  - name: vigil-decisions
+#    plan: free

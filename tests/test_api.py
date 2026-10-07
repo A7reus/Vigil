@@ -142,3 +142,11 @@ def test_explanation_backfill_chain(client):
                 "fan_in_flag": 1, "p2p_flag": 1, "account_age_days": 400, "avg_balance_log": 8.5})
     out = infer.score_features(row, 0.30)
     assert len(out["top_3_reasons"]) == 3
+
+
+@needs_stack
+def test_health_accepts_head_for_uptime_monitors(client):
+    # UptimeRobot pings HEAD /health; must be 200, not 405.
+    r = client.head("/health")
+    assert r.status_code == 200
+    assert r.content == b""
