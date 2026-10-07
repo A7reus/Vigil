@@ -10,7 +10,7 @@ Answers the Track 01 test: **What happened? Why is it risky? What should upay do
 - **Analyst queue**: `GET /alerts` (pre-scored, risk-sorted), `GET /case/:id` (timeline plus narrative, reusing the exact cached causal features), `POST /decision` (feedback loop for retraining).
 - **Analyst console**: a static frontend in `/web` with no build step, served at `GET /`: a risk queue with level filter and search, case detail with English/Bangla narrative plus timeline plus decision buttons, and a `POST /score` playground.
 - **Evaluation**: `python -m eval.evaluate` reports Precision@100, Recall@5%FPR, AUC against a rule baseline, p95 latency, fairness (FPR by district and account age), and a business simulation (loss prevented, analyst minutes saved). Batched scoring handles 8k rows in about 2s, down from about 100s.
-- **Cross-dataset check**: the same pipeline on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules, with our best signals unavailable — and **frozen weights transfer**: same-artifact zero-shot scoring (`eval/zeroshot.py`) holds AUC 0.98+ on an unseen feed with operating bands intact. See `docs/paysim-validation.md`.
+- **Cross-dataset check**: the same pipeline on PaySim mobile money data (`eval/paysim_adapter.py`, offline) reaches AUC 0.90 against 0.50 for rules — and **frozen weights transfer**: same-artifact zero-shot scoring (`eval/zeroshot.py`) reaches AUC 0.88 on PaySim and 0.98+ on an unseen same-schema feed. Operating bands transfer on same-schema data; PaySim's shift needs per-deployment recalibration, as documented. See `docs/paysim-validation.md`.
 
 ## Technology stack
 Python 3.12+, Pandas, NumPy, Scikit-learn, NetworkX, FastAPI/Uvicorn, PyYAML, Joblib.
@@ -65,7 +65,7 @@ python -m scripts.run_demo              # 4k-txn end-to-end: generate → train 
 
 ## Testing instructions
 ```bash
-pytest -q                                   # 47 tests + 3 live-gated (need a key): smoke, API, security, LLM (mocked), intensive, paysim (needs data/ + artifacts/)
+pytest -q                                   # 50 tests + 3 live-gated (need a key): smoke, API, security, LLM (mocked), intensive, paysim (needs data/ + artifacts/), zeroshot
 python -m eval.evaluate --sample 20000      # offline metrics + fairness + business sim
 # API verify: /health -> {"ok": true}; /score latency_ms should be <200 p95 locally
 # Frontend verify: GET / -> 200 text/html; queue + case + playground in browser
