@@ -41,14 +41,23 @@ Executed 2026-10-07 (source: seed-42 50k run; foreign: seed-7 40k run, 6% fraud)
 | In-domain (ours→ours, full) | 0.999 | 0.990 | — | — |
 | Zero-shot full weights → foreign | **0.996** | **0.990** | 0.95 / 0.96 | 0.98 / 0.93 |
 | Zero-shot intersect → foreign | **0.984** | **0.966** | 0.92 / 0.91 | 0.97 / 0.85 |
+| Zero-shot full weights → PaySim | **0.699** | **0.596** | 0.67 / 0.95 | 0.67 / 0.91 |
+| Zero-shot intersect → PaySim | **0.883** | **0.786** | 0.67 / 0.95 | 0.67 / 0.93 |
 | Retrained → PaySim (below) | 0.899 | 0.629 | — | — |
-| Zero-shot intersect → PaySim | pending CSV — command above | | | |
 
 Read: frozen weights hold up across distributions, and the operating bands
 transfer (a Medium flag still means ~0.92+ precision on unseen data). The
 intersect variant exists for feeds missing our device/location/reset signals;
-where those exist, full weights transfer best. Simulator-to-simulator is
-mechanism-generality evidence, not real-world proof — stated as such.
+where those exist, full weights transfer best. Two honest caveats from the
+PaySim run: (1) the chronological test window is 66% fraud (PaySim fraud
+clusters late), so trust AUC/recall, not P@100; (2) **ranking transfers but
+operating points don't** — frozen 0.60/0.85 bands over-flag on PaySim
+(FPR ~0.9) because score distributions shift across feeds. Deployment
+procedure: recalibrate bands on week-1 local data, then freeze. That
+recalibration step belongs in the production runbook, and the gap between
+the 0.70 full-weight and 0.88 intersect-weight AUC is itself evidence the
+portable feature design is what makes transfer work. Simulator-to-simulator
+is mechanism-generality evidence, not real-world proof — stated as such.
 
 ## Results (`docs/paysim-eval.json`, 108k adapted rows, all 8,213 frauds kept)
 | Metric | Model | Rule baseline |
