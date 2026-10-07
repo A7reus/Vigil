@@ -25,3 +25,7 @@ shap==0.52.0
 # Available alternative (metrics tied with XGBoost on our data; not wired into
 # training — kept for experiments, HGB from scikit-learn remains the zero-extra-dep fallback).
 lightgbm==4.7.0
+
+# Pilot hosting: Postgres audit log when DATABASE_URL is set (Render free PG
+# covers judging; SQLite stays the offline default). Binary wheel, no server needed.
+psycopg[binary]==3.3.6

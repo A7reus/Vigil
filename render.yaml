@@ -16,3 +16,11 @@ services:
         value: qwen2.5:3b
       # No daemon on Render free tier: the API serves template narratives.
       # On your own box, `ollama pull qwen2.5:3b` + `ollama serve` instead.
+# Durable decisions on hosted Render (free disks are wiped on sleep/redeploy):
+# Dashboard → New → PostgreSQL (free, 30-day expiry covers judging; $6/mo
+# after) → Connect → Environment → DATABASE_URL. With it set, the API logs
+# decisions to Postgres; without it, SQLite, same contract. Venue laptop
+# needs none of this — SQLite is the offline default.
+#databases:
+#  - name: vigil-decisions
+#    plan: free

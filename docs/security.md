@@ -36,10 +36,12 @@ before any enforcement; never auto-tune on unreviewed labels.
   finite JSON enforced by middleware). The console sends no key, so it pairs
   with the open default; keyed deployments use service clients.
 - Ground truth: `/alerts` and `/case` never expose training labels.
-- Decisions persist in SQLite (`VIGIL_DECISIONS_DB`, default
-  `data/decisions.db`): unknown `txn_id` → 404; same analyst+txn upserts
-  instead of duplicating; notes capped at 500 chars; the log survives restarts
-  and feeds the retrain queue (`pending_retrain`).
+- Decisions persist across restarts: SQLite by default (`VIGIL_DECISIONS_DB`,
+  `data/decisions.db`), Postgres when `DATABASE_URL` is set (hosted Render,
+  whose free disks are wiped on sleep — free PG covers judging, paid after).
+  Same upsert contract both sides: unknown `txn_id` → 404; same analyst+txn
+  upserts instead of duplicating; notes capped at 500 chars; the log feeds
+  the retrain queue (`pending_retrain`).
 - Prompt injection: raw fields are sanitized (`_safe()` strips control chars,
   caps at 120) before prompts/narratives, and the system instruction treats
   evidence values as untrusted data. High-impact actions still require analyst
