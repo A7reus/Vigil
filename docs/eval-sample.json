@@ -5,7 +5,7 @@
     "auc": 0.9982,
     "precision@100": 1.0,
     "recall@5%FPR": 0.9938,
-    "p95_latency_ms": 9.4
+    "p95_latency_ms": 9.82
   },
   "rule_baseline": {
     "auc": 0.8119,
@@ -22,6 +22,12 @@
       "Rajshahi": 0.0058,
       "Rangpur": 0.0,
       "Sylhet": 0.0083
+    },
+    "age_group": {
+      "18-25": 0.0057,
+      "26-35": 0.0047,
+      "36-50": 0.0114,
+      "50+": 0.0058
     },
     "account_age_bucket": {
       "new": 0.0029,
