@@ -17,7 +17,10 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS decisions (
   analyst TEXT NOT NULL DEFAULT 'analyst',
   note TEXT NOT NULL DEFAULT '',
   at TEXT NOT NULL,
+  txn TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY (txn_id, analyst))"""
+# The txn snapshot column arrived after the table: backfill old databases.
+MIGRATE_TXN = "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS txn TEXT NOT NULL DEFAULT '{}'"
 
 
 def database_url(url: str | None = None) -> str:
@@ -39,23 +42,32 @@ class DecisionLog:
         with self._lock:
             cur = self._db.cursor()
             cur.execute(SCHEMA)
+            cur.execute(MIGRATE_TXN)  # txn snapshot for retraining LIVE scores
             cur.close()
 
     def upsert(self, entry: dict) -> bool:
-        """Insert or overwrite the same analyst+txn row. Returns updated."""
+        """Insert or overwrite the same analyst+txn row. Returns updated.
+
+        entry["txn"] is a JSON string snapshot of the scored transfer, so
+        retraining can rebuild rows even for LIVE ids that never entered
+        committed history (see scripts/retrain.py).
+        """
+        import json
         with self._lock:
             cur = self._db.cursor()
             cur.execute("SELECT 1 FROM decisions WHERE txn_id=%s AND analyst=%s",
                         (entry["txn_id"], entry.get("analyst", "analyst")))
             updated = cur.fetchone() is not None
             cur.execute(
-                """INSERT INTO decisions (txn_id, decision, analyst, note, at)
-                   VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO decisions (txn_id, decision, analyst, note, at, txn)
+                   VALUES (%s, %s, %s, %s, %s, %s)
                    ON CONFLICT(txn_id, analyst)
                    DO UPDATE SET decision=excluded.decision, note=excluded.note,
-                                 at=excluded.at""",
+                                 at=excluded.at, txn=excluded.txn""",
                 (entry["txn_id"], entry["decision"], entry.get("analyst", "analyst"),
-                 entry.get("note", ""), entry.get("at", "")))
+                 entry.get("note", ""), entry.get("at", ""),
+                 entry.get("txn") if isinstance(entry.get("txn"), str)
+                 else json.dumps(entry.get("txn", {}), default=str)))
             cur.close()
         return updated
 
@@ -70,8 +82,8 @@ class DecisionLog:
     def all(self) -> list[dict]:
         with self._lock:
             cur = self._db.cursor()
-            cur.execute("SELECT txn_id, decision, analyst, note, at FROM decisions ORDER BY at")
+            cur.execute("SELECT txn_id, decision, analyst, note, at, txn FROM decisions ORDER BY at")
             rows = cur.fetchall()
             cur.close()
-        return [{"txn_id": t, "decision": d, "analyst": a, "note": n, "at": ts}
-                for t, d, a, n, ts in rows]
+        return [{"txn_id": t, "decision": d, "analyst": a, "note": n, "at": ts, "txn": tx}
+                for t, d, a, n, ts, tx in rows]

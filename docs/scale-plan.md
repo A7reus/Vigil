@@ -21,8 +21,9 @@
 
 ## Integration sketch
 Real stream → feature store (same 26 cols, past-only windows) → `POST /score`
-→ case queue UI → analyst `/decision` → label store → weekly
-`python -m models.train` → versioned `artifacts/` + `metrics.json` gate.
+→ case queue UI → analyst `/decision` (Postgres audit log) → weekly
+`python -m scripts.retrain` (analyst rows as weak labels over the original
+ballast, old-vs-new metrics gate, SHIP/HOLD verdict) → versioned `artifacts/`.
 Thresholds stay in `config/thresholds.yaml` so ops tunes without ML deploys.
 
 ## Business assumptions (explicit)
