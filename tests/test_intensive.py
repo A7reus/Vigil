@@ -192,7 +192,10 @@ def test_middleware_edges():
         assert r.status_code == 422
 
 
-def test_sequential_scoring_latency():
+def test_sequential_scoring_latency(monkeypatch):
+    # Scoring-pipeline latency only: a live LLM_API_KEY would add provider
+    # network time to every request, which this test must not measure.
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
     import time
     from fastapi.testclient import TestClient
     from api.main import app

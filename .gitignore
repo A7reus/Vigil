@@ -11,6 +11,9 @@ data/
 artifacts/
 *.parquet
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite*
 # OS / editor
 .DS_Store

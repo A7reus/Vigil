@@ -72,10 +72,17 @@ def _payload(model: str, prompt: str) -> dict:
     }
 
 
+def _timeout() -> float:
+    try:
+        return max(1.0, float(os.getenv("VIGIL_LLM_TIMEOUT", "15")))
+    except ValueError:
+        return 15.0
+
+
 def _post_httpx(base: str, api_key: str, payload: dict) -> str:
     import httpx  # lazy: keeps API cold start fast without the dep
 
-    r = httpx.post(f"{base}/chat/completions", timeout=15,
+    r = httpx.post(f"{base}/chat/completions", timeout=_timeout(),
                    headers={"Authorization": f"Bearer {api_key}"}, json=payload)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
@@ -89,7 +96,7 @@ def _post_urllib(base: str, api_key: str, payload: dict) -> str:
         f"{base}/chat/completions", data=data,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
                  "User-Agent": "Vigil/0.1"})
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=_timeout()) as r:
         out = json.loads(r.read().decode())
     return out["choices"][0]["message"]["content"]
 

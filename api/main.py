@@ -16,9 +16,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api import auth, db
 from api.llm import narrate
 from api.rules import decide, get_config
-from api.schemas import DecisionRequest, ScoreRequest
+from api.schemas import (CaseAssignRequest, CaseStatusRequest, DecisionRequest,
+                         LoginRequest, RegisterRequest, ScoreRequest)
 from api.store import HistoryStore
 from models import infer
 from models.graph import build_graph, fraud_nodes, network_risk
@@ -68,6 +70,11 @@ async def lifespan(app: FastAPI):
     # histories don't blow up cold-start time on the on-site machine.
     pre_limit = int(os.getenv("VIGIL_ALERTS_LIMIT", "200"))
     alert_cache = _build_alerts(limit=pre_limit)
+    db.configure()
+    auth.seed_demo_users()
+    for r in alert_cache:
+        db.upsert_case(r["txn_id"], _blob_for_alert(r), r["risk_score"],
+                       r["risk_level"], source="queue")
     startup_info = {
         "history_rows": len(tx), "graph_nodes": graph.number_of_nodes(),
         "queue_size": len(alert_cache),
@@ -133,6 +140,20 @@ def _build_alerts(limit: int = 500) -> list[dict]:
     return sorted(out, key=lambda x: -x["risk_score"])
 
 
+def _blob_for_alert(r: dict) -> dict:
+    """Persisted case shape mirroring live_cases (txn + feats + score + graph)."""
+    txn = {k: r.get(k) for k in ("sender_id", "receiver_id", "amount", "channel",
+                                 "device_id", "location", "timestamp", "type")}
+    return {"txn": txn, "feats": r.get("feats", {}),
+            "score": {k: r.get(k) for k in ("p_fraud", "anomaly", "graph_boost",
+                                            "risk_score", "top_3_reasons")},
+            "decision": {"risk_level": r.get("risk_level"),
+                         "recommended_action": r.get("recommended_action")},
+            "graph": {"boost": r.get("graph_boost_raw", 0.0),
+                      "fraud_neighbors_2hop": r.get("fraud_neighbors_2hop", 0),
+                      "fraud_neighbor_sample": r.get("fraud_neighbor_sample", [])}}
+
+
 app = FastAPI(title="Vigil Risk API", version="0.1.0", lifespan=lifespan)
 # NOTE (security): open CORS is intentional for the hackathon demo (judges hit
 # the API from any origin). Restrict allow_origins to the deployed frontend
@@ -183,9 +204,171 @@ def health():
 @app.get("/metrics")
 def metrics():
     """Lightweight ops counters (monitoring expectation in the guideline)."""
+    try:
+        logged, open_cases = db.count_decisions(), len(db.list_open_cases(limit=100000))
+    except Exception:
+        logged, open_cases = 0, len(alert_cache)
     return {"requests_scored": request_count, "queue_size": len(alert_cache),
-            "decisions_logged": 0 if store is None else len(store.decisions),
+            "decisions_logged": logged, "open_cases": open_cases,
             "startup": startup_info}
+
+
+# --- auth: registration is pending until an admin approves -----------------
+@app.post("/auth/register", status_code=201)
+def register(req: RegisterRequest):
+    auth.check_username(req.username)
+    auth.check_password(req.password)
+    u = db.create_user(req.username, auth.hash_password(req.password))
+    if u is None:
+        raise HTTPException(409, "username already taken")
+    log.info("registered %s (pending approval)", req.username)
+    return {"user": db.public_user(u),
+            "message": "registered; awaiting admin approval before login"}
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest, request: Request):
+    if not _rate_limit_ok("login:" + (request.client.host if request.client else "?")):
+        raise HTTPException(429, "too many login attempts, retry in a minute")
+    u = db.get_user_by_username(req.username)
+    if not u or not auth.verify_password(req.password, u["pw_hash"]):
+        raise HTTPException(401, "invalid credentials")
+    if u["status"] == "pending":
+        raise HTTPException(403, "account pending admin approval")
+    if u["status"] != "active":
+        raise HTTPException(403, "account disabled")
+    token, exp = auth.issue_token(u["id"])
+    log.info("login %s", u["username"])
+    return {"token": token, "expires_at": exp, "user": db.public_user(u)}
+
+
+@app.get("/auth/me")
+def me(request: Request):
+    return {"user": auth.need_user(request)}
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    from api.auth import bearer_token
+    import hashlib
+    t = bearer_token(request)
+    if t:
+        db.revoke_session(hashlib.sha256(t.encode()).hexdigest())
+    return {"ok": True}
+
+
+# --- admin: users, reviews, case workflow ----------------------------------
+@app.get("/admin/users")
+def admin_users(request: Request):
+    auth.need_admin(request)
+    return {"users": db.list_users()}
+
+
+@app.post("/admin/users/{uid}/approve")
+def admin_approve(uid: int, request: Request):
+    auth.need_admin(request)
+    u = db.set_user_status(uid, "active")
+    if u is None:
+        raise HTTPException(404, "unknown user")
+    log.info("admin approved user %s", u["username"])
+    return {"user": db.public_user(u)}
+
+
+@app.post("/admin/users/{uid}/disable")
+def admin_disable(uid: int, request: Request):
+    me = auth.need_admin(request)
+    if me["id"] == uid:
+        raise HTTPException(400, "cannot disable your own admin account")
+    u = db.set_user_status(uid, "disabled")
+    if u is None:
+        raise HTTPException(404, "unknown user")
+    return {"user": db.public_user(u)}
+
+
+@app.post("/admin/users/{uid}/enable")
+def admin_enable(uid: int, request: Request):
+    auth.need_admin(request)
+    u = db.set_user_status(uid, "active")
+    if u is None:
+        raise HTTPException(404, "unknown user")
+    return {"user": db.public_user(u)}
+
+
+@app.get("/admin/decisions")
+def admin_decisions(request: Request, analyst: str | None = None, limit: int = Query(200, ge=1, le=2000)):
+    auth.need_admin(request)
+    return {"decisions": db.list_decisions(analyst=analyst, limit=limit)}
+
+
+@app.get("/admin/cases")
+def admin_cases(request: Request, status: str | None = None, analyst: str | None = None,
+                limit: int = Query(200, ge=1, le=2000)):
+    auth.need_admin(request)
+    if status and status not in ("open", "assigned", "closed"):
+        raise HTTPException(422, "status must be open|assigned|closed")
+    return {"cases": [db.row_to_public_case(r) for r in db.list_cases(status, analyst, limit)]}
+
+
+@app.post("/cases/{txn_id}/assign")
+def assign_case(txn_id: str, req: CaseAssignRequest, request: Request):
+    me = auth.need_user(request)
+    target = db.get_user_by_username(req.analyst)
+    if not target or target["status"] != "active":
+        raise HTTPException(404, "unknown or inactive analyst")
+    if me["role"] != "admin" and req.analyst != me["username"]:
+        raise HTTPException(403, "analysts may only self-assign; admins may assign anyone")
+    if not db.get_case(txn_id) and txn_id not in _known_txn_ids():
+        raise HTTPException(404, "unknown txn_id")
+    db.upsert_case(txn_id, _case_blob_or_empty(txn_id), *db_case_score(txn_id))
+    if not db.set_case_status(txn_id, "assigned", req.analyst):
+        raise HTTPException(404, "unknown txn_id")
+    log.info("case %s assigned to %s by %s", txn_id, req.analyst, me["username"])
+    return {"ok": True, "txn_id": txn_id, "analyst": req.analyst}
+
+
+@app.post("/cases/{txn_id}/status")
+def case_status(txn_id: str, req: CaseStatusRequest, request: Request):
+    me = auth.need_user(request)
+    row = db.get_case(txn_id)
+    if row is None and txn_id not in _known_txn_ids():
+        raise HTTPException(404, "unknown txn_id")
+    if req.status == "closed" and me["role"] != "admin" and (row or {}).get("analyst") != me["username"]:
+        raise HTTPException(403, "only the assignee or an admin may close a case")
+    if row is None:
+        db.upsert_case(txn_id, _case_blob_or_empty(txn_id), *db_case_score(txn_id))
+    db.set_case_status(txn_id, req.status)
+    return {"ok": True, "txn_id": txn_id, "status": req.status}
+
+
+def _case_blob_or_empty(txn_id: str) -> dict:
+    row = db.get_case(txn_id)
+    if row:
+        import json
+        try:
+            return json.loads(row["payload"])
+        except Exception:
+            pass
+    live = live_cases.get(txn_id)
+    if live:
+        return {"txn": live["txn"], "feats": live["feats"], "score": live["score"],
+                "decision": live["decision"], "graph": live["graph"]}
+    for r in alert_cache:
+        if r["txn_id"] == txn_id:
+            return _blob_for_alert(r)
+    return {}
+
+
+def db_case_score(txn_id: str) -> tuple[float, str]:
+    row = db.get_case(txn_id)
+    if row:
+        return float(row["risk_score"]), row["risk_level"]
+    live = live_cases.get(txn_id)
+    if live:
+        return float(live["score"]["risk_score"]), live["decision"]["risk_level"]
+    for r in alert_cache:
+        if r["txn_id"] == txn_id:
+            return float(r["risk_score"]), r["risk_level"]
+    return 0.0, "Low"
 
 
 # Exact score-time state for LIVE txns (feats + graph facts), so /case/{live_id}
@@ -218,15 +401,24 @@ def _known_txn_ids() -> set:
     ids = {r["txn_id"] for r in alert_cache} | set(live_cases)
     if store is not None and len(store.txns):
         ids |= set(store.txns["txn_id"].tolist())
+    try:
+        ids |= {r["txn_id"] for r in db.list_cases(limit=5000)}
+    except Exception:
+        pass
     return ids
 
 
 @app.post("/score")
-def score(req: ScoreRequest, request: Request):
+def score(req: ScoreRequest, request: Request, commit: bool = False):
     global request_count
     assert store is not None and graph is not None
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
+    committer = None
+    if commit:
+        # Authenticated ingestion (item 1): reviewed/confirmed traffic joins
+        # committed history so velocity and seen-sets reflect real behavior.
+        committer = auth.need_user(request)
     t0 = time.perf_counter()
     txn = req.model_dump()
     feats = store.featurize(txn)
@@ -238,14 +430,21 @@ def score(req: ScoreRequest, request: Request):
     d = decide(s["risk_score"])
     nar = narrate(txn, feats, {**s, **d}, gf, lang=req.lang)
     txn_id = f"LIVE-{uuid4().hex[:8]}"
-    # Scoring-neutral: visible in timelines only, never moves anyone's features.
-    store.append_live({"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
-                       "amount": txn["amount"], "type": txn.get("type", "P2P"), "timestamp": txn["timestamp"],
-                       "device_id": txn["device_id"], "location": txn["location"], "channel": txn["channel"]})
-    live_cases[txn_id] = {"txn": txn, "feats": feats, "score": s, "decision": d,
-                          "graph": {"boost": gf["boost"],
-                                    "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
-                                    "fraud_neighbor_sample": gf.get("fraud_neighbor_sample", [])}}
+    row = {"txn_id": txn_id, "sender": txn["sender_id"], "receiver": txn["receiver_id"],
+           "amount": txn["amount"], "type": txn.get("type", "P2P"), "timestamp": txn["timestamp"],
+           "device_id": txn["device_id"], "location": txn["location"], "channel": txn["channel"],
+           "is_fraud": 0, "fraud_type": "none", "password_reset_flag": int(txn.get("password_reset_flag", 0))}
+    if committer:
+        store.append(row)  # committed: moves future features
+    else:
+        # Scoring-neutral: visible in timelines only, never moves anyone's features.
+        store.append_live(row)
+    blob = {"txn": txn, "feats": feats, "score": s, "decision": d,
+            "graph": {"boost": gf["boost"],
+                      "fraud_neighbors_2hop": gf["fraud_neighbors_2hop"],
+                      "fraud_neighbor_sample": gf.get("fraud_neighbor_sample", [])}}
+    live_cases[txn_id] = blob
+    db.upsert_case(txn_id, blob, s["risk_score"], d["risk_level"], source="live")
     while len(live_cases) > MAX_LIVE_CASES:
         live_cases.pop(next(iter(live_cases)))
     latency_ms = (time.perf_counter() - t0) * 1000
@@ -262,30 +461,61 @@ def score(req: ScoreRequest, request: Request):
 
 @app.get("/alerts")
 def alerts(limit: int = Query(100, ge=1, le=500), level: str | None = None):
-    rows = alert_cache[:limit] if alert_cache else []
+    # Persistent queue: CSV pre-score merged with DB cases (live scores and
+    # restarts survive here), deduped, top-risk-first.
+    seen, merged = set(), []
+    for r in alert_cache:
+        seen.add(r["txn_id"])
+        merged.append({k: v for k, v in r.items()
+                       if k not in ("feats", "graph_boost_raw", "label")})
+    try:
+        for row in db.list_open_cases(limit=500):
+            if row["txn_id"] not in seen:
+                seen.add(row["txn_id"])
+                merged.append(db.row_to_public_case(row))
+    except Exception as e:
+        log.warning("alerts DB merge skipped: %s", e)
+    merged.sort(key=lambda r: -float(r.get("risk_score", 0.0)))
     if level:
-        rows = [r for r in rows if r["risk_level"].lower() == level.lower()]
-    # Public view: no internals (feats), no ground-truth labels.
-    public = [{k: v for k, v in r.items() if k not in ("feats", "graph_boost_raw", "label")}
-              for r in rows[:limit]]
-    return {"alerts": public, "count": len(public)}
+        merged = [r for r in merged if str(r.get("risk_level", "")).lower() == level.lower()]
+    return {"alerts": merged[:limit], "count": len(merged[:limit])}
+
+
+def _blob_to_case(txn_id: str, blob: dict) -> tuple[dict, dict, dict, dict]:
+    """Normalize a persisted score blob to (txn, feats, case, graph_facts)."""
+    txn, feats = blob["txn"], blob["feats"]
+    graph = blob.get("graph", {})
+    c = {**blob.get("score", {}), **blob.get("decision", {}),
+         "fraud_neighbors_2hop": graph.get("fraud_neighbors_2hop", 0),
+         "fraud_neighbor_sample": graph.get("fraud_neighbor_sample", []),
+         "txn_id": txn_id,
+         **{k: txn.get(k) for k in ("sender_id", "receiver_id", "amount", "channel",
+                                    "device_id", "location", "timestamp")}}
+    return txn, feats, c, graph
 
 
 @app.get("/case/{txn_id}")
 def case(txn_id: str, lang: str = "en"):
     assert store is not None
+    status = "open"
     live = live_cases.get(txn_id)
     rows = [r for r in alert_cache if r["txn_id"] == txn_id]
-    if live is None and not rows:
+    db_row = None if (live is not None or rows) else db.get_case(txn_id)
+    if live is None and not rows and db_row is None:
         raise HTTPException(404, "case not found; score it first via POST /score or pick a queued alert")
     if live is not None:
-        txn, feats = live["txn"], live["feats"]
-        c = {**live["score"], **live["decision"],
-             "fraud_neighbors_2hop": live["graph"]["fraud_neighbors_2hop"],
-             "fraud_neighbor_sample": live["graph"]["fraud_neighbor_sample"],
-             "txn_id": txn_id, **{k: txn.get(k) for k in
-                                  ("sender_id", "receiver_id", "amount", "channel", "device_id", "location", "timestamp")}}
-        gfacts = live["graph"]
+        txn, feats, c, gfacts = _blob_to_case(
+            txn_id, {"txn": live["txn"], "feats": live["feats"],
+                     "score": live["score"], "decision": live["decision"],
+                     "graph": live["graph"]})
+    elif db_row is not None:
+        import json
+        try:
+            blob = json.loads(db_row["payload"])
+        except Exception:
+            raise HTTPException(500, "stored case payload is corrupt")
+        txn, feats, c, gfacts = _blob_to_case(txn_id, blob)
+        status = db_row.get("status", "open")
     else:
         c = rows[0]
         txn = {"sender_id": c.get("sender_id", c.get("sender")),
@@ -308,6 +538,7 @@ def case(txn_id: str, lang: str = "en"):
     nar = narrate(txn, feats, c, gfacts, lang=lang)
     timeline = store.timeline_for(txn.get("sender_id", txn.get("sender", "")), n=10)
     public = {k: v for k, v in c.items() if k not in ("feats", "graph_boost_raw", "label")}
+    public["status"] = status
     log.info("case %s viewed (lang=%s)", txn_id, lang)
     return {**public, "narrative": nar["narrative"], "timeline": timeline}
 
@@ -319,18 +550,14 @@ def decision(req: DecisionRequest, request: Request):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
-    entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat()}
-    updated = False
-    for i, d in enumerate(store.decisions):
-        if d.get("txn_id") == req.txn_id and d.get("analyst") == req.analyst:
-            store.decisions[i] = entry
-            updated = True
-            break
-    if not updated:
-        store.decisions.append(entry)
-    log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, req.analyst, updated)
-    return {"ok": True, "updated": updated, "logged": req.model_dump(),
-            "pending_retrain": len(store.decisions)}
+    me = auth.current_user(request)
+    analyst = me["username"] if me else req.analyst
+    entry, updated = db.upsert_decision(req.txn_id, analyst, req.decision, req.note)
+    log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, analyst, updated)
+    return {"ok": True, "updated": updated,
+            "logged": {"txn_id": req.txn_id, "decision": req.decision,
+                       "analyst": analyst, "note": req.note},
+            "pending_retrain": db.count_decisions()}
 
 
 # Analyst console (no build step): served from /web. API routes above take
