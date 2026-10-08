@@ -59,8 +59,37 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.500A8 8 0 0 1 9.500 4 8 8 0 1 0 20 14.500z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
       </button>
       <button type="button" id="tourBtn" class="icon-btn" aria-label="Take the guided tour" data-tip="Guided tour (?)">?</button>
+      <button type="button" id="adminTab" class="btn" hidden data-tip="Admin dashboard">Admin</button>
+      <span id="userChip" class="user-chip" hidden><span id="userName"></span><span id="userRole" class="badge"></span></span>
+      <button type="button" id="signinBtn" class="btn" data-tip="Sign in (decisions carry your name)">Sign in</button>
+      <button type="button" id="logoutBtn" class="btn" hidden data-tip="Sign out">Sign out</button>
     </div>
   </header>
+
+  <div id="authView" class="auth-overlay" hidden>
+    <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <h2 id="authTitle">Sign in to Vigil</h2>
+      <p class="muted small">Signed-in decisions carry your name. New accounts need an admin's approval before they can sign in. Guests can keep using the console anonymously.</p>
+      <div class="seg" role="group" aria-label="Sign in or register">
+        <button type="button" class="seg-btn" id="tabLogin" aria-pressed="true">Sign in</button>
+        <button type="button" class="seg-btn" id="tabRegister" aria-pressed="false">Register</button>
+      </div>
+      <form id="loginForm">
+        <label class="field">Username<input name="username" required autocomplete="username" placeholder="e.g. analyst" /></label>
+        <label class="field">Password<input name="password" type="password" required autocomplete="current-password" /></label>
+        <p id="authError" class="form-error" hidden role="alert"></p>
+        <button type="submit" class="btn primary wide">Sign in</button>
+      </form>
+      <form id="registerForm" hidden>
+        <label class="field">Username<input name="username" required autocomplete="username" placeholder="3-32 chars" /></label>
+        <label class="field">Password<input name="password" type="password" required autocomplete="new-password" placeholder="At least 8 characters" /></label>
+        <p id="regError" class="form-error" hidden role="alert"></p>
+        <button type="submit" class="btn primary wide">Request access</button>
+      </form>
+      <p id="pendingNote" class="muted small" hidden>Registered. An admin must approve your account before you can sign in.</p>
+      <button type="button" id="authClose" class="btn">Continue as guest</button>
+    </div>
+  </div>
 
   <section id="kpis" class="kpis" aria-label="Queue summary">
     <div class="kpi"><span class="kpi-label">In queue</span><strong id="kTotal">–</strong><span class="kpi-sub" id="kTotalSub">&nbsp;</span>
@@ -157,6 +186,46 @@
       </div>
     </aside>
   </main>
+
+  <section id="adminView" class="admin-pane" aria-labelledby="adminTitle" hidden>
+    <div class="pane-head">
+      <h2 id="adminTitle">Admin dashboard</h2>
+      <button type="button" id="consoleTab" class="btn" data-tip="Back to the analyst console">Console</button>
+    </div>
+    <div class="admin-grid">
+      <div class="admin-card">
+        <h3>Pending approvals <small id="pendingCount"></small></h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">User</th><th scope="col">Registered</th><th scope="col">Action</th></tr></thead>
+          <tbody id="pendingBody"></tbody>
+        </table></div>
+      </div>
+      <div class="admin-card">
+        <h3>Users</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
+          <tbody id="usersBody"></tbody>
+        </table></div>
+      </div>
+      <div class="admin-card wide">
+        <h3>Submitted reviews</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">Case</th><th scope="col">Analyst</th><th scope="col">Decision</th><th scope="col">At</th></tr></thead>
+          <tbody id="reviewsBody"></tbody>
+        </table></div>
+      </div>
+      <div class="admin-card wide">
+        <h3>Retrain from analyst feedback</h3>
+        <p class="muted small">Runs <code>scripts/retrain</code> on this server: analyst decisions become weak labels over the original data, then a SHIP/HOLD verdict. Applying copies the winner over the live model.</p>
+        <div class="tools-row">
+          <button type="button" id="retrainBtn" class="btn primary">Start retrain</button>
+          <button type="button" id="retrainApplyBtn" class="btn">Start retrain + apply on SHIP</button>
+          <span id="retrainState" class="muted small"></span>
+        </div>
+        <pre id="retrainOut" class="retrain-out" hidden></pre>
+      </div>
+    </div>
+  </section>
 
   <footer>
     <small>Vigil API: <code>GET /health · GET /alerts · GET /case/{id} · POST /score · POST /decision</code>

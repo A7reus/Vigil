@@ -31,7 +31,13 @@ const LEVELS = ['High', 'Medium', 'Low'];
 const safeLevel = (l) => (LEVELS.includes(l) ? l : 'Low');
 
 /* ---------- Network ---------- */
+function authHeaders() {
+  let t = null;
+  try { t = sessionStorage.getItem('vigil_token'); } catch (e) {}
+  return t ? { 'Authorization': `Bearer ${t}` } : {};
+}
 async function api(path, opts) {
+  opts = { ...(opts || {}), headers: { ...(opts && opts.headers), ...authHeaders() } };
   const r = await fetch(path, opts);
   if (!r.ok) {
     const txt = await r.text().catch(() => '');
@@ -707,3 +713,138 @@ loadQueue().then(() => {
     if (!tourSeen()) startTour();
   }
 });
+
+/* ---------- Auth (guest by default; sign-in attributes decisions) ---------- */
+let me = null;
+async function refreshMe() {
+  let t = null;
+  try { t = sessionStorage.getItem('vigil_token'); } catch (e) {}
+  me = null;
+  if (t) {
+    try { me = (await api('/auth/me')).user; }
+    catch (e) { try { sessionStorage.removeItem('vigil_token'); } catch (e2) {} }
+  }
+  const signed = !!me, admin = signed && me.role === 'admin';
+  $('userChip').hidden = !signed;
+  $('logoutBtn').hidden = !signed;
+  $('signinBtn').hidden = signed;
+  $('adminTab').hidden = !admin;
+  if (signed) {
+    $('userName').textContent = me.username;
+    $('userRole').textContent = me.role;
+  }
+  if (!admin) { $('adminView').hidden = true; }
+}
+function showAuth(tab) {
+  $('authView').hidden = false;
+  $('tabLogin').setAttribute('aria-pressed', String(tab !== 'register'));
+  $('tabRegister').setAttribute('aria-pressed', String(tab === 'register'));
+  $('loginForm').hidden = tab === 'register';
+  $('registerForm').hidden = tab !== 'register';
+}
+$('signinBtn').addEventListener('click', () => showAuth('login'));
+$('authClose').addEventListener('click', () => { $('authView').hidden = true; });
+$('tabLogin').addEventListener('click', () => showAuth('login'));
+$('tabRegister').addEventListener('click', () => showAuth('register'));
+$('logoutBtn').addEventListener('click', async () => {
+  try { await api('/auth/logout', { method: 'POST' }); } catch (e) {}
+  try { sessionStorage.removeItem('vigil_token'); } catch (e) {}
+  await refreshMe();
+  toast('Signed out — continuing as guest');
+});
+async function submitAuth(form, errEl, path, okMsg) {
+  const fd = new FormData(form);
+  try {
+    const out = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: fd.get('username'), password: fd.get('password') }) });
+    $(errEl).hidden = true;
+    if (out.token) {
+      try { sessionStorage.setItem('vigil_token', out.token); } catch (e) {}
+      $('authView').hidden = true;
+      await refreshMe();
+      toast(okMsg);
+    } else {
+      $('pendingNote').hidden = false;
+      toast('Registered — an admin must approve you first');
+    }
+  } catch (e) { const p = $(errEl); p.textContent = String(e.message || e); p.hidden = false; }
+}
+$('loginForm').addEventListener('submit', (e) => { e.preventDefault(); submitAuth(e.target, 'authError', '/auth/login', 'Signed in'); });
+$('registerForm').addEventListener('submit', (e) => { e.preventDefault(); submitAuth(e.target, 'regError', '/auth/register', 'Registered'); });
+
+/* ---------- Admin dashboard ---------- */
+let retrainTimer = null;
+function adminRow(cells) {
+  const tr = document.createElement('tr');
+  for (const c of cells) {
+    const td = document.createElement('td');
+    if (typeof c === 'string') td.textContent = c; else td.appendChild(c);
+    tr.appendChild(td);
+  }
+  return tr;
+}
+function adminBtn(label, fn) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'btn'; b.textContent = label;
+  b.addEventListener('click', async () => { try { await fn(); await loadAdmin(); } catch (e) { toast(String(e.message || e), 'error'); } });
+  return b;
+}
+async function loadAdmin() {
+  $('adminView').hidden = false;
+  const users = (await api('/admin/users')).users;
+  const pend = users.filter((u) => u.status === 'pending');
+  $('pendingCount').textContent = pend.length ? `(${pend.length})` : '';
+  const pb = $('pendingBody'); pb.replaceChildren();
+  for (const u of pend) {
+    pb.appendChild(adminRow([u.username, (u.created_at || '').slice(0, 10), adminBtn('Approve', () =>
+      api(`/admin/users/${u.id}/approve`, { method: 'POST' }))]));
+  }
+  const ub = $('usersBody'); ub.replaceChildren();
+  for (const u of users) {
+    const act = u.status === 'active' && u.username !== me.username
+      ? adminBtn('Disable', () => api(`/admin/users/${u.id}/disable`, { method: 'POST' }))
+      : (u.status === 'disabled' ? adminBtn('Enable', () => api(`/admin/users/${u.id}/enable`, { method: 'POST' })) : document.createTextNode('—'));
+    ub.appendChild(adminRow([u.username, u.role, u.status, act]));
+  }
+  const revs = (await api('/admin/decisions?limit=200')).decisions;
+  const rb = $('reviewsBody'); rb.replaceChildren();
+  for (const r of revs.slice(0, 100)) {
+    rb.appendChild(adminRow([r.txn_id, r.analyst, r.decision, (r.at || '').slice(0, 19).replace('T', ' ')]));
+  }
+  await refreshRetrain(true);
+}
+$('adminTab').addEventListener('click', async () => {
+  try { await loadAdmin(); } catch (e) { toast(String(e.message || e), 'error'); }
+});
+$('consoleTab').addEventListener('click', () => { $('adminView').hidden = true; });
+
+/* ---------- Admin retraining ---------- */
+async function refreshRetrain(silent) {
+  try {
+    const s = await api('/admin/retrain/status');
+    const el = $('retrainState');
+    el.textContent = `state: ${s.state}`;
+    const out = $('retrainOut');
+    if (s.result) {
+      out.hidden = false;
+      out.textContent = JSON.stringify(s.result, null, 2);
+      if (s.state === 'done' && !silent) {
+        toast(`Retrain ${s.result.verdict || 'finished'} — see verdict below`, s.result.verdict === 'SHIP' ? '' : 'error');
+      }
+    }
+    return s.state;
+  } catch (e) { if (!silent) toast(String(e.message || e), 'error'); return 'error'; }
+}
+async function startRetrain(apply) {
+  await api(`/admin/retrain?apply=${apply ? 'true' : 'false'}`, { method: 'POST' });
+  $('retrainState').textContent = 'state: running…';
+  if (retrainTimer) clearInterval(retrainTimer);
+  retrainTimer = setInterval(async () => {
+    const st = await refreshRetrain(false);
+    if (st === 'done' || st === 'error') clearInterval(retrainTimer);
+  }, 5000);
+}
+$('retrainBtn').addEventListener('click', () => startRetrain(false).catch((e) => toast(String(e.message || e), 'error')));
+$('retrainApplyBtn').addEventListener('click', () => startRetrain(true).catch((e) => toast(String(e.message || e), 'error')));
+
+refreshMe();

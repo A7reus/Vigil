@@ -26,12 +26,17 @@ before any enforcement; never auto-tune on unreviewed labels.
 ## Security
 - CORS `*` is demo-only (see code comment in `api/main.py`); restrict to the
   deployed frontend domain for anything beyond the hackathon.
-- Auth: open by default for judging, locked by `VIGIL_API_KEY` (shared secret,
-  sent as `X-API-Key` on `POST /score` + `POST /decision`) anywhere exposed;
-  reads stay open. Compensated by (a) LIVE isolation, which keeps
+- Auth, two layers: (a) signed-in analysts/admins (PBKDF2 passwords, opaque
+  `vigil_*` bearer tokens with expiry, roles analyst/admin, registration
+  pending until approved; demo seeds `admin/admin123` + `analyst/analyst123`
+  only on empty user tables unless `VIGIL_SEED_DEMO=0`); (b) the service key
+  `VIGIL_API_KEY` (`X-API-Key` on writes) for scripts. Writes accept token
+  or key; a signed-in analyst decides as themselves (no impersonation);
+  admin routes (`/admin/*`, retraining) need an admin token — the service
+  key is not admin. Reads stay open. Compensated by (a) LIVE isolation, which keeps
   unreviewed `/score` traffic is scoring-neutral (separate capped buffer,
   excluded from features/seen-sets/graph/history eviction), (b) per-IP rate
-  limiting on `/score` + `/decision` (`VIGIL_RATE_LIMIT_PER_MIN`, default 120,
+  limiting on `/score` + `/decision` + login (`VIGIL_RATE_LIMIT_PER_MIN`, default 120,
   0 disables; 429 JSON), (c) strict input bounds (lengths, timestamp range,
   finite JSON enforced by middleware). The console sends no key, so it pairs
   with the open default; keyed deployments use service clients.
