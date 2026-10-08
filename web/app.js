@@ -790,7 +790,9 @@ function adminBtn(label, fn) {
   return b;
 }
 async function loadAdmin() {
-  $('adminView').hidden = false;
+  const av = $('adminView');
+  av.hidden = false;
+  try { av.scrollIntoView({ block: 'start' }); } catch (e) { av.scrollIntoView(); }
   const users = (await api('/admin/users')).users;
   const pend = users.filter((u) => u.status === 'pending');
   $('pendingCount').textContent = pend.length ? `(${pend.length})` : '';
