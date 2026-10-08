@@ -14,7 +14,8 @@ already saw, now as the everyday path rather than the exception.
 ## Explainability
 Every score ships `top_3_reasons` (auditable rules first, then model importance)
 plus the LLM narrative grounded in structured evidence only
-(`api/llm.py` system prompt: use ONLY provided JSON, fixed template).
+(`api/llm.py` system prompt: use ONLY the provided values, fixed template,
+no JSON in the output).
 Predictions, assumptions, and generated text are separate fields.
 
 ## Fairness
