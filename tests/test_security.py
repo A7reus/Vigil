@@ -156,7 +156,7 @@ def test_env_example_contract():
              if ln.strip() and not ln.strip().startswith("#")]
     got = dict(ln.split("=", 1) for ln in lines)
     for var in ("OLLAMA_HOST", "OLLAMA_MODEL", "VIGIL_API_KEY",
-                "DATABASE_URL",
+                "DATABASE_URL", "VIGIL_SEED_DEMO", "VIGIL_TOKEN_DAYS",
                 "VIGIL_ALERTS_LIMIT", "VIGIL_RATE_LIMIT_PER_MIN"):
         assert var in got, var
     import re
