@@ -16,6 +16,7 @@ from features.build import FEATURE_COLS
 
 ART = Path("artifacts")
 _clf = _iso = None
+_cols: list[str] = list(FEATURE_COLS)  # actual model inputs, from feature_cols.json
 _calib: np.ndarray | None = None
 _feature_importance: dict[str, float] = {}
 _explainer = None  # lazy SHAP TreeExplainer (built on first explained row)
@@ -23,14 +24,17 @@ _explainer_broken = False  # set when shap/model combo fails — don't retry
 
 
 def load_artifacts(art_dir: str | Path = ART):
-    global _clf, _iso, _calib, _feature_importance, _explainer, _explainer_broken
+    global _clf, _iso, _calib, _feature_importance, _explainer, _explainer_broken, _cols
     _explainer = None  # model changed — rebuild lazily
     _explainer_broken = False
     art_dir = Path(art_dir)
     _clf = joblib.load(art_dir / "classifier.pkl")
     _iso = joblib.load(art_dir / "anomaly.pkl")
     cols = json.loads((art_dir / "feature_cols.json").read_text())
-    assert cols == FEATURE_COLS, "feature drift: retrain"
+    # Full artifacts match FEATURE_COLS exactly; portable ("intersect")
+    # artifacts are a strict subset — both are served, unknown names are not.
+    assert set(cols) <= set(FEATURE_COLS), f"unknown features in {art_dir}: retrain"
+    _cols = list(cols)
     calib_path = art_dir / "anomaly_calib.npy"
     try:
         _calib = np.sort(np.load(calib_path)) if calib_path.exists() else None
@@ -51,7 +55,7 @@ def load_artifacts(art_dir: str | Path = ART):
         if fi is None and hasattr(_clf, "coef_"):
             fi = np.abs(np.asarray(_clf.coef_).ravel())
         if fi is not None:
-            _feature_importance = dict(zip(FEATURE_COLS, [float(x) for x in fi]))
+            _feature_importance = dict(zip(_cols, [float(x) for x in fi]))
     return _clf, _iso
 
 
@@ -128,7 +132,7 @@ def _shap_backfill(feat_row: dict, skip_substr: tuple = ()) -> list[str]:
     if ex is None:
         return []
     try:
-        X = np.array([[float(feat_row[c]) for c in FEATURE_COLS]])
+        X = np.array([[float(feat_row[c]) for c in _cols]])
         sv = np.asarray(ex.shap_values(X)).ravel()
     except Exception:
         return []
@@ -136,7 +140,7 @@ def _shap_backfill(feat_row: dict, skip_substr: tuple = ()) -> list[str]:
     for i in np.argsort(-sv):  # most risk-increasing first
         if sv[i] <= 0:
             break
-        k = FEATURE_COLS[int(i)]
+        k = _cols[int(i)]
         if k in ("amount",):
             continue
         if any(k.replace("_", " ")[:6] in r for r in list(skip_substr) + out):
@@ -176,7 +180,7 @@ def score_features(feat_row: dict, graph_boost: float = 0.0,
         load_artifacts()
     assert _clf is not None
     weights = weights or {"classifier": 0.7, "anomaly": 0.2, "graph_boost": 0.1}
-    X = np.array([[float(feat_row[c]) for c in FEATURE_COLS]])
+    X = np.array([[float(feat_row[c]) for c in _cols]])
     p = float(_clf.predict_proba(X)[0, 1])
     a = float(_anomaly01(X)[0])
     g = max(0.0, min(float(graph_boost), 0.30)) / 0.30  # normalize boost to 0..1

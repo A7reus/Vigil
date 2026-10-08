@@ -1,0 +1,49 @@
+{
+  "protocol": "frozen-zero-shot (no training; weights + anomaly calibration from source)",
+  "source_artifacts": "artifacts_intersect",
+  "source_feature_set": [
+    "amount",
+    "amount_log",
+    "hour",
+    "unusual_hour",
+    "is_night",
+    "is_weekend",
+    "sender_cnt_1h",
+    "sender_sum_1h",
+    "sender_cnt_24h",
+    "sender_sum_24h",
+    "time_since_last_min",
+    "amount_vs_user_avg",
+    "new_receiver",
+    "is_round_amount",
+    "recv_cnt_1h",
+    "recv_n_senders_1h",
+    "fan_in_flag",
+    "cash_out_flag",
+    "agent_channel_flag",
+    "p2p_flag",
+    "account_age_days",
+    "avg_balance_log"
+  ],
+  "target_feed": "/tmp/opencode/paysim_vigil",
+  "n_test": 6144,
+  "fraud_rate_test": 0.6631,
+  "auc": 0.8829,
+  "precision@100": 0.99,
+  "recall@5%FPR": 0.7855,
+  "threshold_transfer": {
+    "medium@0.60": {
+      "flagged": 5763,
+      "precision": 0.67,
+      "recall": 0.9477,
+      "fpr": 0.9188
+    },
+    "high@0.85": {
+      "flagged": 5669,
+      "precision": 0.6682,
+      "recall": 0.9298,
+      "fpr": 0.9087
+    }
+  },
+  "eval_latency_total_s": 19.5
+}

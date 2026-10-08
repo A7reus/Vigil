@@ -124,7 +124,9 @@ no real customer data. The difference that matters is authorship. Our
 simulator injects scam, takeover, mule, and agent patterns of our own design,
 plus realistic noise. PaySim is an independent public dataset collected from
 Kaggle, built by other researchers with a simulator calibrated on aggregated
-real logs. It validates generalization and never trains the product.
+real logs. PaySim never trains the product. The retrained run below measures
+pipeline portability; the frozen zero-shot runs in Table~\ref{tab:zeroshot}
+test the trained weights themselves, with no refit.
 
 \begin{table}[htbp]
 \centering
@@ -164,6 +166,16 @@ On PaySim, where our best signals are unavailable, it holds 0.90 while the
 rules collapse to a coin flip. We deliberately refused leakage features that
 would have printed perfect scores and proved nothing.
 
+Retraining shows the code works elsewhere; freezing the weights shows the
+model itself travels. With no refit, the portable intersect model trained
+only on cross-schema signals reaches 0.883 AUC and 0.786 recall at 5\%
+FPR on PaySim, against 0.699 for full weights that lean on device signals
+PaySim lacks --- evidence the portable design is what transfers. Two honest
+limits: PaySim's chronological test window is 66\% fraud, so rank metrics
+count and Precision@100 does not; and ranking transfers while operating
+points do not, so bands are recalibrated per deployment
+(docs/paysim-validation.md).
+
 \begin{table}[htbp]
 \centering
 \caption{Same pipeline, same metrics, foreign data included.}
@@ -176,6 +188,21 @@ AUC & 0.9982 & 0.8119 & 0.8985 & 0.5049 \\
 Precision@100 & 1.00 & 0.86 & 1.00 & 0.83 \\
 Recall@5\%FPR & 0.9938 & 0.2149 & 0.6286 & 0.0000 \\
 p95 latency & 25.9 ms & & 23.2 ms & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Frozen weights, zero refit, PaySim test window.}
+\label{tab:zeroshot}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Metric & Intersect weights & Full weights \\
+\midrule
+AUC & 0.8829 & 0.6985 \\
+Recall@5\%FPR & 0.7855 & 0.5957 \\
+Frozen 0.60 band precision / recall & 0.67 / 0.95 & 0.67 / 0.95 \\
 \bottomrule
 \end{tabular}
 \end{table}
