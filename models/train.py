@@ -16,7 +16,7 @@ import yaml
 from sklearn.ensemble import HistGradientBoostingClassifier, IsolationForest
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-from features.build import FEATURE_COLS, build_features
+from features.build import FEATURE_COLS, INTERSECT_COLS, build_features
 
 try:
     from xgboost import XGBClassifier  # type: ignore
@@ -52,7 +52,16 @@ def calibrate_anomaly(scores_calib: np.ndarray, scores: np.ndarray) -> np.ndarra
     return (idx / len(calib)).astype(float)
 
 
-def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | None = None):
+def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | None = None,
+          feature_set: str = "full"):
+    """Train classifier + anomaly detector.
+
+    feature_set="full" uses all FEATURE_COLS. "intersect" uses only the
+    cross-schema INTERSECT_COLS (no device/location/reset signals) so the
+    frozen artifact can score foreign feeds zero-shot.
+    """
+    assert feature_set in ("full", "intersect"), "feature_set must be full|intersect"
+    cols = INTERSECT_COLS if feature_set == "intersect" else FEATURE_COLS
     data_dir, art = Path(data_dir), Path(artifacts)
     art.mkdir(parents=True, exist_ok=True)
     cfg = yaml.safe_load(open("config/thresholds.yaml"))
@@ -67,7 +76,7 @@ def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | No
         txns = pd.concat([fraud, norm]).sort_values("timestamp").reset_index(drop=True)
 
     feat = build_features(txns, customers, devices)
-    X = feat[FEATURE_COLS].to_numpy(dtype=float)
+    X = feat[cols].to_numpy(dtype=float)
     y = feat["is_fraud"].to_numpy(dtype=int)
     tr = (feat["split"] == "train").to_numpy() if "split" in feat else np.arange(len(feat)) < int(0.8 * len(feat))
     Xtr, ytr, Xte, yte = X[tr], y[tr], X[~tr], y[~tr]
@@ -95,6 +104,7 @@ def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | No
     final = w["classifier"] * p_test + w["anomaly"] * a_test_n  # graph added at serve time
     metrics = {
         "model": "xgboost" if HAS_XGB else "histgradientboosting",
+        "feature_set": feature_set,
         "n_train": int(tr.sum()), "n_test": int((~tr).sum()),
         "auc": round(float(roc_auc_score(yte, p_test)) if len(np.unique(yte)) > 1 else 0.0, 4),
         "avg_precision": round(float(average_precision_score(yte, p_test)) if len(np.unique(yte)) > 1 else 0.0, 4),
@@ -104,7 +114,7 @@ def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | No
     }
     joblib.dump(clf, art / "classifier.pkl")
     joblib.dump(iso, art / "anomaly.pkl")
-    (art / "feature_cols.json").write_text(json.dumps(FEATURE_COLS, indent=2))
+    (art / "feature_cols.json").write_text(json.dumps(cols, indent=2))
     # Model-agnostic global importance (permutation on a small train sample) so
     # explanations always have a fallback — HGB exposes no feature_importances_
     # and SHAP may be absent on minimal installs.
@@ -116,7 +126,7 @@ def train(data_dir: str = "data", artifacts: str = "artifacts", sample: int | No
         perm = permutation_importance(clf, Xtr[idx], ytr[idx], n_repeats=5,
                                       random_state=42, n_jobs=4)
         (art / "feature_importance.json").write_text(json.dumps(
-            {c: round(float(v), 5) for c, v in zip(FEATURE_COLS, perm.importances_mean)},
+            {c: round(float(v), 5) for c, v in zip(cols, perm.importances_mean)},
             indent=2))
     except Exception as e:
         print(f"warning: permutation importance skipped ({e})")
@@ -133,5 +143,6 @@ if __name__ == "__main__":
     ap.add_argument("--data", default="data")
     ap.add_argument("--artifacts", default="artifacts")
     ap.add_argument("--sample", type=int, default=None)
+    ap.add_argument("--feature-set", default="full", choices=["full", "intersect"])
     a = ap.parse_args()
-    train(a.data, a.artifacts, a.sample)
+    train(a.data, a.artifacts, a.sample, a.feature_set)

@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
             "python -m models.train --data data --artifacts artifacts, "
             "then start the API."
         ) from e
+    from features.build import FEATURE_COLS
+    assert set(infer._cols) == set(FEATURE_COLS), \
+        "API serves full-feature artifacts only (intersect sets are eval-only)"
     store = HistoryStore()
     # Audit trail lives in Postgres (DATABASE_URL required — fail fast here,
     # not mid-demo). Replaces the phase-1 process-local list.

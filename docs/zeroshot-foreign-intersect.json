@@ -1,0 +1,59 @@
+{
+  "protocol": "frozen-zero-shot (no training; weights + anomaly calibration from source)",
+  "mode": "zero-shot: frozen home model, no retraining on foreign data",
+  "source_artifacts": "/tmp/art_inter",
+  "source_feature_set": [
+    "amount",
+    "amount_log",
+    "hour",
+    "unusual_hour",
+    "is_night",
+    "is_weekend",
+    "sender_cnt_1h",
+    "sender_sum_1h",
+    "sender_cnt_24h",
+    "sender_sum_24h",
+    "time_since_last_min",
+    "amount_vs_user_avg",
+    "new_receiver",
+    "is_round_amount",
+    "recv_cnt_1h",
+    "recv_n_senders_1h",
+    "fan_in_flag",
+    "cash_out_flag",
+    "agent_channel_flag",
+    "p2p_flag",
+    "account_age_days",
+    "avg_balance_log"
+  ],
+  "target_feed": "/tmp/foreign",
+  "home_auc": 0.9923,
+  "n_test": 4000,
+  "fraud_rate_test": 0.126,
+  "model": {
+    "auc": 0.9837,
+    "precision@100": 1.0,
+    "recall@5%FPR": 0.9663
+  },
+  "auc": 0.9837,
+  "rule_baseline": {
+    "auc": 0.8148,
+    "precision@100": 0.89,
+    "recall@5%FPR": 0.2163
+  },
+  "threshold_transfer": {
+    "medium@0.60": {
+      "flagged": 499,
+      "precision": 0.9238,
+      "recall": 0.9147,
+      "fpr": 0.0109
+    },
+    "high@0.85": {
+      "flagged": 445,
+      "precision": 0.9663,
+      "recall": 0.8532,
+      "fpr": 0.0043
+    }
+  },
+  "eval_s": 2.5
+}
