@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,10 +17,12 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api import auth
 from api.decisions import DecisionLog
 from api.llm import narrate
 from api.rules import decide, get_config
-from api.schemas import DecisionRequest, ScoreRequest
+from api.schemas import (CaseAssignRequest, CaseStatusRequest, DecisionRequest,
+                         LoginRequest, RegisterRequest, ScoreRequest)
 from api.store import HistoryStore
 from models import infer
 from models.graph import build_graph, fraud_nodes, network_risk
@@ -64,6 +67,10 @@ async def lifespan(app: FastAPI):
     # Audit trail lives in Postgres (DATABASE_URL required — fail fast here,
     # not mid-demo). Replaces the phase-1 process-local list.
     decision_log = DecisionLog()
+    # Accounts + case workflow tables share the same database; demo seeds
+    # only fire on empty user tables (VIGIL_SEED_DEMO=0 disables).
+    auth.ensure_schema()
+    auth.seed_demo_users()
     if len(store.txns) == 0:
         log.warning("no transaction history found in data/ — queue will be empty until data is generated")
     tx = store.txns
@@ -218,6 +225,16 @@ def _require_key(request: Request) -> None:
         raise HTTPException(401, "missing or wrong X-API-Key")
 
 
+def _writer_ok(request: Request) -> dict | None:
+    """Writes accept a signed-in analyst/admin (Bearer token) or the service
+    API key. Returns the user when a token was used, else None (open/key)."""
+    u = auth.current_user(request)
+    if u is not None:
+        return u
+    _require_key(request)
+    return None
+
+
 def _rate_limit_ok(ip: str) -> bool:
     try:
         limit = int(os.getenv("VIGIL_RATE_LIMIT_PER_MIN", "120"))
@@ -262,7 +279,7 @@ def _txn_snapshot(txn_id: str) -> dict:
 def score(req: ScoreRequest, request: Request):
     global request_count
     assert store is not None and graph is not None
-    _require_key(request)
+    _writer_ok(request)
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     t0 = time.perf_counter()
@@ -348,23 +365,232 @@ def case(txn_id: str, lang: str = "en"):
     timeline = store.timeline_for(txn.get("sender_id", txn.get("sender", "")), n=10)
     public = {k: v for k, v in c.items() if k not in ("feats", "graph_boost_raw", "label")}
     log.info("case %s viewed (lang=%s)", txn_id, lang)
-    return {**public, "narrative": nar["narrative"], "timeline": timeline}
+    return {**public, "narrative": nar["narrative"], "timeline": timeline,
+            "workflow": auth.get_case_state(txn_id)}
 
 
 @app.post("/decision")
 def decision(req: DecisionRequest, request: Request):
     assert store is not None and decision_log is not None
-    _require_key(request)
+    user = _writer_ok(request)
     if not _rate_limit_ok(request.client.host if request.client else "unknown"):
         raise HTTPException(429, "rate limit exceeded, retry in a minute")
     if req.txn_id not in _known_txn_ids():
         raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
-    entry = {**req.model_dump(), "at": pd.Timestamp.now("UTC").isoformat(),
+    body = req.model_dump()
+    if user is not None:
+        # A signed-in analyst decides as themselves — no impersonation.
+        body["analyst"] = user["username"]
+    entry = {**body, "at": pd.Timestamp.now("UTC").isoformat(),
              "txn": json.dumps(_txn_snapshot(req.txn_id), default=str)}
     updated = decision_log.upsert(entry)
-    log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, req.analyst, updated)
-    return {"ok": True, "updated": updated, "logged": req.model_dump(),
+    log.info("decision %s -> %s by %s (updated=%s)", req.txn_id, req.decision, body["analyst"], updated)
+    logged = {k: body[k] for k in ("txn_id", "decision", "analyst", "note")}
+    return {"ok": True, "updated": updated, "logged": logged,
             "pending_retrain": len(decision_log)}
+
+
+# ---------------------------------------------------------------------------
+# Accounts + RBAC (Postgres; no SQLite anywhere). Guests keep the open demo;
+# signed-in analysts decide as themselves; admins approve users and retrain.
+# ---------------------------------------------------------------------------
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+@app.post("/auth/register", status_code=201)
+def register(req: RegisterRequest):
+    auth.check_username(req.username)
+    auth.check_password(req.password)
+    u = auth.create_user(req.username, auth.hash_password(req.password))
+    if u is None:
+        raise HTTPException(409, "username already taken")
+    log.info("registered %s (pending approval)", req.username)
+    return {"user": auth.public_user(u),
+            "message": "registered; awaiting admin approval before login"}
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest, request: Request):
+    if not _rate_limit_ok("login:" + _client_ip(request)):
+        raise HTTPException(429, "too many login attempts, retry in a minute")
+    u = auth.get_user_by_username(req.username)
+    if not u or not auth.verify_password(req.password, u["pw_hash"]):
+        raise HTTPException(401, "invalid credentials")
+    if u["status"] == "pending":
+        raise HTTPException(403, "account pending admin approval")
+    if u["status"] != "active":
+        raise HTTPException(403, "account disabled")
+    token, exp = auth.issue_token(u["id"])
+    log.info("login %s", u["username"])
+    return {"token": token, "expires_at": exp, "user": auth.public_user(u)}
+
+
+@app.get("/auth/me")
+def me(request: Request):
+    return {"user": auth.need_user(request)}
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    t = auth.bearer_token(request)
+    if t:
+        import hashlib
+        auth.revoke_session(hashlib.sha256(t.encode()).hexdigest())
+    return {"ok": True}
+
+
+@app.get("/admin/users")
+def admin_users(request: Request):
+    auth.need_admin(request)
+    return {"users": auth.list_users()}
+
+
+@app.post("/admin/users/{uid}/approve")
+def admin_approve(uid: int, request: Request):
+    auth.need_admin(request)
+    u = auth.set_user_status(uid, "active")
+    if u is None:
+        raise HTTPException(404, "unknown user")
+    return {"user": auth.public_user(u)}
+
+
+@app.post("/admin/users/{uid}/disable")
+def admin_disable(uid: int, request: Request):
+    auth.need_admin(request)
+    u = auth.set_user_status(uid, "disabled")
+    if u is None:
+        raise HTTPException(404, "unknown user")
+    return {"user": auth.public_user(u)}
+
+
+@app.post("/admin/users/{uid}/enable")
+def admin_enable(uid: int, request: Request):
+    return admin_approve(uid, request)
+
+
+@app.get("/admin/decisions")
+def admin_decisions(request: Request, analyst: str | None = None,
+                    limit: int = Query(200, ge=1, le=2000)):
+    auth.need_admin(request)
+    assert decision_log is not None
+    rows = decision_log.all()
+    if analyst:
+        rows = [r for r in rows if r.get("analyst") == analyst]
+    return {"decisions": rows[:limit], "count": min(len(rows), limit)}
+
+
+@app.get("/admin/cases")
+def admin_cases(request: Request, status: str | None = None,
+                analyst: str | None = None,
+                limit: int = Query(200, ge=1, le=2000)):
+    """Case workflow board: state rows joined with whatever the queue knows."""
+    auth.need_admin(request)
+    states = auth.list_case_states(status=status, assignee=analyst, limit=limit)
+    known = {r["txn_id"]: r for r in alert_cache}
+    known.update({tid: {"txn_id": tid, **live["txn"],
+                        "risk_score": live["score"]["risk_score"],
+                        "risk_level": live["decision"]["risk_level"]}
+                for tid, live in live_cases.items()})
+    out = []
+    for s in states:
+        row = {"txn_id": s["txn_id"], "status": s["status"],
+               "assignee": s.get("assignee"), "updated_at": s.get("updated_at")}
+        k = known.get(s["txn_id"], {})
+        for f in ("risk_score", "risk_level", "amount", "sender_id", "receiver_id"):
+            if f in k:
+                row[f] = k[f]
+        out.append(row)
+    return {"cases": out, "count": len(out)}
+
+
+@app.post("/cases/{txn_id}/assign")
+def assign_case(txn_id: str, req: CaseAssignRequest, request: Request):
+    u = auth.need_user(request)
+    if txn_id not in _known_txn_ids():
+        raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
+    if u["role"] != "admin" and req.analyst != u["username"]:
+        raise HTTPException(403, "analysts can only assign cases to themselves")
+    s = auth.set_case_state(txn_id, status="assigned", assignee=req.analyst)
+    log.info("case %s assigned to %s by %s", txn_id, req.analyst, u["username"])
+    return s
+
+
+@app.post("/cases/{txn_id}/status")
+def case_status(txn_id: str, req: CaseStatusRequest, request: Request):
+    u = auth.need_user(request)
+    if txn_id not in _known_txn_ids():
+        raise HTTPException(404, "unknown txn_id; score it or pick a queued alert first")
+    s = auth.set_case_state(txn_id, status=req.status)
+    log.info("case %s -> %s by %s", txn_id, req.status, u["username"])
+    return s
+
+
+@app.get("/cases")
+def list_cases(request: Request, status: str | None = None,
+               analyst: str | None = None,
+               limit: int = Query(200, ge=1, le=2000)):
+    auth.need_user(request)
+    return {"cases": auth.list_case_states(status=status, assignee=analyst, limit=limit)}
+
+
+# ---------------------------------------------------------------------------
+# Admin retraining: POST starts scripts/retrain in a background worker,
+# GET polls it. Same SHIP/HOLD gate as the CLI; --apply equivalent copies
+# the winner over the live artifacts and reloads in-process. On ephemeral
+# hosting (Render free) the new model lasts until the next redeploy —
+# the verdict says so plainly.
+# ---------------------------------------------------------------------------
+_retrain_executor = None
+_retrain_job: dict = {"state": "idle", "result": None}
+
+
+def _retrain_worker(data_dir: str, artifacts_dir: str, apply: bool) -> dict:
+    import tempfile
+    from scripts import retrain
+    tmp = tempfile.mkdtemp(prefix="vigil_retrain_")
+    try:
+        res = retrain.main(["--data", data_dir, "--artifacts", artifacts_dir,
+                            "--out-data", str(Path(tmp) / "aug"),
+                            "--out-artifacts", str(Path(tmp) / "art2")] +
+                           (["--apply"] if apply else []))
+        if apply and res.get("applied"):
+            infer.load_artifacts(artifacts_dir)  # serve the winner now
+        return res
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.post("/admin/retrain")
+def admin_retrain(request: Request, apply: bool = False,
+                  data_dir: str = "data", artifacts_dir: str = "artifacts"):
+    auth.need_admin(request)
+    global _retrain_executor
+    if _retrain_job["state"] == "running":
+        raise HTTPException(409, "a retrain job is already running")
+    import concurrent.futures
+    if _retrain_executor is None:
+        _retrain_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    _retrain_job.update(state="running", result=None)
+    fut = _retrain_executor.submit(_retrain_worker, data_dir, artifacts_dir, apply)
+
+    def _done(f):
+        try:
+            _retrain_job.update(state="done", result=f.result())
+        except Exception as e:  # never leave the status stuck on running
+            _retrain_job.update(state="error", result={"error": str(e)})
+            log.exception("retrain job failed")
+
+    fut.add_done_callback(_done)
+    log.info("retrain started by admin (apply=%s)", apply)
+    return {"state": "running"}
+
+
+@app.get("/admin/retrain/status")
+def admin_retrain_status(request: Request):
+    auth.need_admin(request)
+    return _retrain_job
 
 
 # Analyst console (no build step): served from /web. API routes above take

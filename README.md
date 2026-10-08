@@ -42,7 +42,9 @@ environment variables take precedence over the file.
 | `OLLAMA_HOST` | Local Ollama daemon (never a cloud URL — case data stays in-country) | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Small local instruction model with usable Bangla | `qwen2.5:3b` |
 | `VIGIL_ALERTS_LIMIT` | Pre-scored queue size at startup (bounds cold start) | `200` |
-| `VIGIL_API_KEY` | Shared secret for writes (empty = open demo; set = `X-API-Key` required) | `` (empty) |
+| `VIGIL_API_KEY` | Shared secret for writes (empty = open demo; set = `X-API-Key` required; signed-in tokens also accepted) | `` (empty) |
+| `VIGIL_SEED_DEMO` | Seed `admin/admin123` + `analyst/analyst123` on empty user tables (`0` disables — set it anywhere real) | `1` |
+| `VIGIL_TOKEN_DAYS` | Bearer-token lifetime for signed-in analysts | `30` |
 | `DATABASE_URL` | Postgres for the decision audit log — required, API refuses to boot without it | `postgresql://vigil:vigil@localhost:5432/vigil` |
 | `VIGIL_ALERT_WINDOW` | Recent rows scored to fill the queue; top risks kept | `2000` |
 | `VIGIL_RATE_LIMIT_PER_MIN` | Per-IP writes/min on `/score` + `/decision` (`0` disables) | `120` |

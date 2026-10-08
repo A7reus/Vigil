@@ -71,3 +71,21 @@ class DecisionRequest(BaseModel):
     decision: Literal["allow", "step-up", "freeze"]
     analyst: str = Field(default="analyst-1", max_length=64)
     note: str = Field(default="", max_length=500)
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class CaseAssignRequest(BaseModel):
+    analyst: str = Field(min_length=3, max_length=32)
+
+
+class CaseStatusRequest(BaseModel):
+    status: Literal["open", "assigned", "closed"]
